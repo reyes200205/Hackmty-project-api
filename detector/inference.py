@@ -72,13 +72,15 @@ def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tup
     conv_prob_synthetic = conv_confidence if conv_is_synthetic else (1.0 - conv_confidence)
     acoustic_confidence = _acoustic_confidence(caller, sample_rate)
 
-    confidence = ACOUSTIC_WEIGHT * acoustic_confidence + (1 - ACOUSTIC_WEIGHT) * conv_prob_synthetic
+    raw_confidence = ACOUSTIC_WEIGHT * acoustic_confidence + (1 - ACOUSTIC_WEIGHT) * conv_prob_synthetic
+    # La decision se toma sobre el score crudo, nunca sobre el calibrado: con pocos ejemplos
+    # de entrenamiento cerca de 0.5, la regresion isotonica puede tener tramos planos en
+    # exactamente 0.5000, y un >= ahi volteria el veredicto sin ninguna razon real.
+    is_synthetic = raw_confidence >= 0.5
 
-    # A4: Calibración estadística con Isotonic Regression (minimiza Brier Score para desempate)
+    confidence = raw_confidence
     calibrator = _load_calibrator()
     if calibrator is not None:
-        confidence = float(calibrator.predict([confidence])[0])
-        confidence = float(np.clip(confidence, 0.001, 0.999))
+        confidence = float(np.clip(float(calibrator.predict([raw_confidence])[0]), 0.001, 0.999))
 
-    is_synthetic = confidence >= 0.5
     return is_synthetic, round(confidence, 4)
