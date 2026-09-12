@@ -7,7 +7,7 @@ import time
 from fastapi import WebSocket
 
 from .script import CALL_SCRIPT
-from .session import CallSession
+from .session import VOICE_RMS_THRESHOLD, CallSession
 from .tts import get_phrase_ulaw
 
 logger = logging.getLogger("call-agent")
@@ -19,6 +19,11 @@ POLL_INTERVAL = 0.1
 
 
 async def _send_ulaw(websocket: WebSocket, stream_sid: str, session: CallSession, ulaw_bytes: bytes) -> None:
+    # Reloj absoluto: si un envio tarda mas de 20ms, el siguiente duerme menos
+    # para recuperar el atraso, en vez de acumular retraso frame a frame
+    # (eso es lo que sonaba "trabado").
+    start = time.monotonic()
+    chunk_index = 0
     for i in range(0, len(ulaw_bytes), CHUNK_BYTES):
         chunk = ulaw_bytes[i:i + CHUNK_BYTES]
         session.ingest_agent_ulaw(chunk)
@@ -28,7 +33,11 @@ async def _send_ulaw(websocket: WebSocket, stream_sid: str, session: CallSession
             "streamSid": stream_sid,
             "media": {"payload": payload},
         }))
-        await asyncio.sleep(CHUNK_SECONDS)
+        chunk_index += 1
+        target_time = start + chunk_index * CHUNK_SECONDS
+        sleep_time = target_time - time.monotonic()
+        if sleep_time > 0:
+            await asyncio.sleep(sleep_time)
 
 
 async def _listen(session: CallSession, max_seconds: float) -> None:
@@ -42,7 +51,8 @@ async def _listen(session: CallSession, max_seconds: float) -> None:
             logger.info("Caller dejo de hablar, cortando el listen antes de tiempo (%.2fs de %.1fs)",
                         time.monotonic() - start, max_seconds)
             return
-    logger.info("Listen agoto su tiempo maximo (%.1fs) sin deteccion clara de fin de turno", max_seconds)
+    logger.info("Listen agoto su tiempo maximo (%.1fs) sin deteccion clara de fin de turno (pico de energia visto: %d, umbral: %d)",
+                max_seconds, session.peak_rms, VOICE_RMS_THRESHOLD)
 
 
 async def run_call_script(websocket: WebSocket, stream_sid: str, session: CallSession) -> None:

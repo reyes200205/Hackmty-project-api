@@ -1,7 +1,7 @@
 import audioop
 import time
 
-VOICE_RMS_THRESHOLD = 400  # amplitud PCM16 por encima de la cual se considera "hablando"
+VOICE_RMS_THRESHOLD = 150  # amplitud PCM16 por encima de la cual se considera "hablando"
 
 
 class CallSession:
@@ -13,12 +13,14 @@ class CallSession:
         self.agent_pcm = bytearray()
         self.voice_active = False
         self.last_voice_ts: float | None = None
+        self.peak_rms = 0
 
     def ingest_caller_ulaw(self, ulaw_bytes: bytes) -> None:
         pcm = audioop.ulaw2lin(ulaw_bytes, 2)
         self.caller_pcm.extend(pcm)
 
         rms = audioop.rms(pcm, 2)
+        self.peak_rms = max(self.peak_rms, rms)
         if rms > VOICE_RMS_THRESHOLD:
             self.last_voice_ts = time.monotonic()
             self.voice_active = True

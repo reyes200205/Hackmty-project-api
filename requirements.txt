@@ -1,3 +1,5 @@
 fastapi[standard]
 pyttsx3
 audioop-lts
+soundfile
+numpy

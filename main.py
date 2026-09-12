@@ -3,11 +3,13 @@ import base64
 import json
 import logging
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
 from call_agent.runner import run_call_script
 from call_agent.session import CallSession
+from detector.inference import decode_stereo_wav, predict_call
+from detector.schema import DetectionRequest, DetectionResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("media-stream")
@@ -18,6 +20,16 @@ app = FastAPI()
 @app.get("/")
 def read_root():
     return {"mensaje": "¡FastAPI funcionando correctamente!"}
+
+
+@app.post("/detect", response_model=DetectionResponse)
+async def detect(payload: DetectionRequest):
+    try:
+        caller, agent, sample_rate = decode_stereo_wav(payload.audio_b64)
+        is_synthetic, confidence = predict_call(caller, agent, sample_rate)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error al procesar el audio: {e}")
+    return DetectionResponse(is_synthetic=is_synthetic, confidence=round(confidence, 4))
 
 
 @app.post("/incoming-call")
