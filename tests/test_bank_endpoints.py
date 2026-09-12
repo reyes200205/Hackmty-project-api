@@ -44,7 +44,14 @@ async def test_unknown_beneficiary_rejected(client, auth_headers, seeded_custome
     assert resp.status_code == 404
 
 
-async def test_correct_phrase_completes_transfer(seeded_customer):
+async def _run_handle_recording(transfer_id: str, transcript: str, is_synthetic: bool, voice_confidence: float = 0.1):
+    with patch("bank.confirmation_service.download_recording", return_value=b"fake-wav-bytes"), \
+         patch("bank.confirmation_service.transcribe_wav", return_value=transcript), \
+         patch("bank.confirmation_service.check_voice_authenticity", return_value=(is_synthetic, voice_confidence)):
+        await TransferConfirmationService().handle_recording(transfer_id, "https://fake/recording", "CAtest123")
+
+
+async def test_correct_phrase_and_human_voice_completes_transfer(seeded_customer):
     transfer = await repository.create_transfer(
         seeded_customer["email"],
         {"beneficiary_id": "pytest-benef-1", "name": "Beneficiario de Prueba"},
@@ -52,11 +59,10 @@ async def test_correct_phrase_completes_transfer(seeded_customer):
     )
     await repository.update_transfer_status(transfer["transfer_id"], "pending", "confirmation_pending")
 
-    result = await TransferConfirmationService().handle_confirmation_result(
-        transfer["transfer_id"], "confirmo la transferencia",
-    )
+    await _run_handle_recording(transfer["transfer_id"], "confirmo la transferencia", is_synthetic=False)
 
-    assert result["status"] == "completed"
+    updated = await repository.get_transfer(transfer["transfer_id"])
+    assert updated["status"] == "completed"
     account = await repository.get_account_by_email(seeded_customer["email"])
     assert account["balance"] == 900.0
 
@@ -69,11 +75,31 @@ async def test_wrong_phrase_rejects_transfer_without_touching_balance(seeded_cus
     )
     await repository.update_transfer_status(transfer["transfer_id"], "pending", "confirmation_pending")
 
-    result = await TransferConfirmationService().handle_confirmation_result(
-        transfer["transfer_id"], "cancelo la transferencia",
+    await _run_handle_recording(transfer["transfer_id"], "cancelo la transferencia", is_synthetic=False)
+
+    updated = await repository.get_transfer(transfer["transfer_id"])
+    assert updated["status"] == "rejected"
+    account = await repository.get_account_by_email(seeded_customer["email"])
+    assert account["balance"] == 1000.0
+
+
+async def test_synthetic_voice_rejects_transfer_even_with_correct_phrase(seeded_customer):
+    """Aunque diga la frase correcta, si el clasificador de voz la marca como
+    sintetica, la transferencia NO debe completarse."""
+    transfer = await repository.create_transfer(
+        seeded_customer["email"],
+        {"beneficiary_id": "pytest-benef-1", "name": "Beneficiario de Prueba"},
+        100.0, "prueba", "CONFIRMO LA TRANSFERENCIA",
+    )
+    await repository.update_transfer_status(transfer["transfer_id"], "pending", "confirmation_pending")
+
+    await _run_handle_recording(
+        transfer["transfer_id"], "confirmo la transferencia", is_synthetic=True, voice_confidence=0.93,
     )
 
-    assert result["status"] == "rejected"
+    updated = await repository.get_transfer(transfer["transfer_id"])
+    assert updated["status"] == "rejected"
+    assert "sintetic" in updated["failure_reason"]
     account = await repository.get_account_by_email(seeded_customer["email"])
     assert account["balance"] == 1000.0
 

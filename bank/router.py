@@ -1,6 +1,7 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from twilio.twiml.voice_response import VoiceResponse
 
 from customers.deps import get_current_customer
 
@@ -100,29 +101,42 @@ async def voice_webhook(transfer_id: str, token: str, params: dict = Depends(ver
     transfer = await repository.get_transfer(transfer_id)
     if transfer is None or transfer.get("confirmation_token") != token:
         raise HTTPException(status_code=404, detail="not found")
-    twiml = confirmation_service.build_gather_twiml(transfer)
+    twiml = confirmation_service.build_confirmation_twiml(transfer)
     return Response(content=twiml, media_type="application/xml")
 
 
 @router.post("/transfers/webhooks/confirm/{transfer_id}/{token}")
 async def confirm_webhook(transfer_id: str, token: str, params: dict = Depends(verify_twilio_signature)):
+    """Twilio pega aqui cuando termina de grabar la frase (<Record> action).
+    El analisis (transcribir + revisar si la voz es sintetica) corre en
+    background; mientras tanto se le pide al usuario que espere."""
     transfer = await repository.get_transfer(transfer_id)
     if transfer is None or transfer.get("confirmation_token") != token:
         raise HTTPException(status_code=404, detail="not found")
 
-    speech_result = params.get("SpeechResult", "")
-    result = await confirmation_service.handle_confirmation_result(transfer_id, speech_result)
+    recording_url = params.get("RecordingUrl", "")
+    call_sid = params.get("CallSid", "")
+    if recording_url:
+        asyncio.create_task(confirmation_service.handle_recording(transfer_id, recording_url, call_sid))
 
-    message = {
-        "completed": "Gracias, su transferencia ha sido confirmada y procesada.",
-        "rejected": "La frase no coincide, la transferencia no sera procesada.",
-        "failed": "Ocurrio un error al procesar la transferencia.",
-        "ignored": "Esta transferencia ya no esta pendiente de confirmacion.",
-    }.get(result["status"], "Proceso finalizado.")
+    twiml = confirmation_service.build_waiting_twiml(transfer)
+    return Response(content=twiml, media_type="application/xml")
 
-    vr = VoiceResponse()
-    vr.say(message, language="es-MX")
-    return Response(content=str(vr), media_type="application/xml")
+
+@router.post("/transfers/webhooks/result/{transfer_id}/{token}")
+async def result_webhook(
+    transfer_id: str,
+    token: str,
+    attempt: int = Query(1, ge=1),
+    params: dict = Depends(verify_twilio_signature),
+):
+    """A donde redirige build_waiting_twiml: revisa si el analisis en
+    background ya termino; si no, vuelve a esperar un poco (hasta un limite)."""
+    transfer = await repository.get_transfer(transfer_id)
+    if transfer is None or transfer.get("confirmation_token") != token:
+        raise HTTPException(status_code=404, detail="not found")
+    twiml = confirmation_service.build_result_twiml(transfer, attempt)
+    return Response(content=twiml, media_type="application/xml")
 
 
 @router.post("/transfers/webhooks/status/{transfer_id}/{token}")
