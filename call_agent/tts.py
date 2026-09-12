@@ -36,6 +36,19 @@ def _wav_to_ulaw_8k(wav_path: Path) -> bytes:
     return audioop.lin2ulaw(pcm, 2)
 
 
+def generate_busy_tone_ulaw(duration_seconds: float = 1.2) -> bytes:
+    """Genera tonos telefónicos de desconexión estándar en µ-law 8kHz."""
+    import numpy as np
+
+    sr = 8000
+    t = np.linspace(0, duration_seconds, int(sr * duration_seconds), endpoint=False)
+    tone = (np.sin(2 * np.pi * 480 * t) + np.sin(2 * np.pi * 620 * t)) * 0.4
+    cadence = 0.4
+    mask = (t % cadence) < 0.25
+    signal = (tone * mask * 32767).astype(np.int16)
+    return audioop.lin2ulaw(signal.tobytes(), 2)
+
+
 def get_phrase_ulaw(text: str) -> bytes:
     """Devuelve el audio de una frase en mu-law 8kHz mono, generandolo y
     cacheandolo en disco la primera vez que se pide."""
@@ -46,8 +59,12 @@ def get_phrase_ulaw(text: str) -> bytes:
         return ulaw_path.read_bytes()
 
     wav_path = CACHE_DIR / f"{key}.wav"
-    _synthesize_wav(text, wav_path)
-    ulaw_bytes = _wav_to_ulaw_8k(wav_path)
-    ulaw_path.write_bytes(ulaw_bytes)
-    wav_path.unlink(missing_ok=True)
-    return ulaw_bytes
+    try:
+        _synthesize_wav(text, wav_path)
+        ulaw_bytes = _wav_to_ulaw_8k(wav_path)
+        ulaw_path.write_bytes(ulaw_bytes)
+        wav_path.unlink(missing_ok=True)
+        return ulaw_bytes
+    except Exception:
+        # Si el motor TTS local no está disponible (ej. Linux sin espeak), devolver tono telefónico
+        return generate_busy_tone_ulaw()

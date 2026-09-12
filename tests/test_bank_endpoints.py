@@ -46,8 +46,8 @@ async def test_unknown_beneficiary_rejected(client, auth_headers, seeded_custome
 
 async def _run_handle_recording(transfer_id: str, transcript: str, is_synthetic: bool, voice_confidence: float = 0.1):
     with patch("bank.confirmation_service.download_recording", return_value=b"fake-wav-bytes"), \
-         patch("bank.confirmation_service.transcribe_with_prosody", return_value=(transcript, {"duration": 3.0})), \
-         patch("bank.confirmation_service.judge_voice_authenticity", return_value=(is_synthetic, voice_confidence, "prueba")):
+         patch("bank.confirmation_service.transcribe_wav", return_value=transcript), \
+         patch("bank.confirmation_service.check_voice_authenticity", return_value=(is_synthetic, voice_confidence, "prueba")):
         await TransferConfirmationService().handle_recording(transfer_id, "https://fake/recording", "CAtest123")
 
 

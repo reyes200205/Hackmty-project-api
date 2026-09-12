@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ from twilio.twiml.voice_response import VoiceResponse
 from . import repository
 from .confirmation_logs import log_confirmation_attempt
 from .phrase_match import phrase_matches
-from .recording_service import download_recording, judge_voice_authenticity, transcribe_with_prosody
+from .recording_service import check_voice_authenticity, download_recording, transcribe_wav
 from .twilio_service import TwilioService
 
 logger = logging.getLogger("bank")
@@ -40,11 +41,16 @@ class TransferConfirmationService:
 
     def build_confirmation_twiml(self, transfer: dict) -> str:
         """Pide la frase y GRABA la respuesta (no solo la transcribe) para
-        poder analizar despues si la voz suena sintetica."""
+        poder analizar despues si la voz suena sintetica.
+
+        Importante: NUNCA se dice la frase de confirmacion en la llamada --
+        eso la volveria inutil como segundo factor (cualquiera que solo
+        conteste el telefono podria repetirla al vuelo). La frase solo se
+        muestra en la app; aqui solo se le pide que la diga."""
         vr = VoiceResponse()
         vr.say(
             f"Para confirmar la transferencia de {transfer['amount']:.2f} pesos a {transfer['beneficiary_name']}, "
-            f"diga: {transfer['confirmation_phrase']}.",
+            "diga la frase de confirmacion que aparece en su aplicacion.",
             language="es-MX",
         )
         vr.record(
@@ -113,12 +119,12 @@ class TransferConfirmationService:
         transcript = ""
         try:
             wav_bytes = await download_recording(recording_url)
-            transcript, prosody = await transcribe_with_prosody(wav_bytes)
+            transcript = await transcribe_wav(wav_bytes)
             phrase_ok = phrase_matches(transfer["confirmation_phrase"], transcript)
-            is_synthetic, voice_confidence, voice_reasoning = await judge_voice_authenticity(
-                transfer["confirmation_phrase"], transcript, prosody,
+            is_synthetic, voice_confidence, voice_reasoning = await asyncio.to_thread(
+                check_voice_authenticity, wav_bytes,
             )
-            logger.info("Transferencia %s: juicio de voz -> %s", transfer_id, voice_reasoning)
+            logger.info("Transferencia %s: analisis de voz -> %s", transfer_id, voice_reasoning)
         except Exception:
             logger.exception("Fallo el analisis de la grabacion para transferencia %s", transfer_id)
             await repository.update_transfer_status(
