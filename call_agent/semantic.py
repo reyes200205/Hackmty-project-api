@@ -6,43 +6,71 @@ import os
 import wave
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import errors as genai_errors
-from google.genai import types
+from groq import AsyncGroq, RateLimitError
 
 load_dotenv()
 
-logger = logging.getLogger("gemini-judge")
+logger = logging.getLogger("groq-judge")
 
-MODEL = "gemini-3.5-flash-lite"  # mas rapido y con mas margen de cuota que 3.6-flash; sobra para transcribir+juzgar
+TRANSCRIBE_MODEL = "whisper-large-v3-turbo"
+JUDGE_MODEL = "openai/gpt-oss-120b"
 MIN_AUDIO_SECONDS = 0.3
-MAX_ATTEMPTS = 3
-RETRY_BACKOFF_SECONDS = 1.5  # se multiplica por el numero de intento (1.5s, 3s)
 
-_client: genai.Client | None = None
+_clients: list[AsyncGroq] | None = None
+_next_idx = 0
+_rotation_lock = asyncio.Lock()
 
-JUDGE_PROMPT = """Eres un analista de fraude de un banco mexicano. Acabas de escuchar el audio \
-de la respuesta de un cliente durante una llamada telefonica, justo despues de que el agente \
-del banco dijo lo siguiente:
+JUDGE_PROMPT = """Eres un analista de fraude de un banco mexicano. El agente del banco acaba \
+de decir lo siguiente durante una llamada telefonica:
 
 "{agent_text}"
 
-Transcribe lo que dice el cliente en el audio y evalua si esa respuesta suena como la de una \
-persona real (dudas, muletillas, lenguaje natural, "no se", "no tengo eso") o como generada \
-por una inteligencia artificial (demasiado estructurada, inventa informacion cuando se le \
-pregunta por algo que no existe, o reacciona de forma extraña a interrupciones/silencios).
-Si el audio esta vacio o es solo silencio/ruido, dilo en el transcript y pon sounds_human en null.
+El cliente respondio (transcrito): "{transcript}"
+
+Evalua si esa respuesta suena como la de una persona real (dudas, muletillas, lenguaje natural, \
+"no se", "no tengo eso") o como generada por una inteligencia artificial (demasiado estructurada, \
+inventa informacion cuando se le pregunta por algo que no existe, o reacciona de forma extraña a \
+interrupciones/silencios).
 
 Responde SOLO en JSON con este formato exacto:
-{{"transcript": "...", "sounds_human": true, "confidence": 0.0, "reasoning": "..."}}
+{{"sounds_human": true, "confidence": 0.0, "reasoning": "..."}}
 """
 
 
-def _get_client() -> genai.Client:
-    global _client
-    if _client is None:
-        _client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    return _client
+def _get_clients() -> list[AsyncGroq]:
+    global _clients
+    if _clients is None:
+        keys = [k.strip() for k in os.environ["GROQ_API_KEYS"].split(",") if k.strip()]
+        _clients = [AsyncGroq(api_key=k) for k in keys]
+        logger.info("Groq: %d api keys cargadas para rotacion", len(_clients))
+    return _clients
+
+
+async def _next_client() -> AsyncGroq:
+    global _next_idx
+    async with _rotation_lock:
+        clients = _get_clients()
+        client = clients[_next_idx % len(clients)]
+        _next_idx += 1
+        return client
+
+
+async def _call_with_rotation(fn):
+    """Intenta la llamada rotando entre todas las api keys disponibles.
+    Si una key esta rate-limited (429) o falla, se prueba la siguiente."""
+    clients = _get_clients()
+    last_error: Exception | None = None
+    for _ in range(len(clients)):
+        client = await _next_client()
+        try:
+            return await fn(client)
+        except RateLimitError as e:
+            last_error = e
+            logger.warning("Groq key rate-limited, rotando a la siguiente: %s", e)
+        except Exception as e:
+            last_error = e
+            logger.warning("Groq fallo con esta key, rotando a la siguiente: %s", e)
+    raise last_error
 
 
 def _pcm_to_wav_bytes(pcm: bytes, sample_rate: int = 8000) -> bytes:
@@ -56,40 +84,41 @@ def _pcm_to_wav_bytes(pcm: bytes, sample_rate: int = 8000) -> bytes:
 
 
 async def judge_response(agent_text: str, caller_pcm: bytes, sample_rate: int = 8000) -> dict:
-    """Manda el audio del caller a Gemini para transcribir y juzgar si suena humano.
-    Se corre en background (no bloquea la conversacion en vivo)."""
+    """Transcribe el audio del caller con Whisper (Groq) y usa un LLM (Groq) para
+    juzgar si la respuesta suena humana. Se corre en background."""
     min_bytes = int(sample_rate * 2 * MIN_AUDIO_SECONDS)
     if len(caller_pcm) < min_bytes:
         return {"transcript": "", "sounds_human": None, "confidence": 0.0, "reasoning": "audio insuficiente"}
 
     wav_bytes = _pcm_to_wav_bytes(caller_pcm, sample_rate)
-    client = _get_client()
-    contents = [
-        types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
-        JUDGE_PROMPT.format(agent_text=agent_text),
-    ]
 
-    last_error: Exception | None = None
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            response = await client.aio.models.generate_content(
-                model=MODEL,
-                contents=contents,
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
+    try:
+        async def _transcribe(client: AsyncGroq):
+            return await client.audio.transcriptions.create(
+                file=("audio.wav", wav_bytes),
+                model=TRANSCRIBE_MODEL,
+                language="es",
+                response_format="text",
             )
-            return json.loads(response.text)
-        except genai_errors.ServerError as e:
-            # 503/500: sobrecarga temporal del lado de Google, vale la pena reintentar.
-            last_error = e
-            if attempt < MAX_ATTEMPTS:
-                wait = RETRY_BACKOFF_SECONDS * attempt
-                logger.warning("Gemini 5xx (intento %d/%d), reintentando en %.1fs: %s",
-                               attempt, MAX_ATTEMPTS, wait, e)
-                await asyncio.sleep(wait)
-        except Exception as e:
-            # Error no transitorio (4xx, JSON invalido, etc): no vale la pena reintentar.
-            last_error = e
-            break
 
-    logger.error("Gemini fallo al juzgar la respuesta tras %d intento(s): %s", MAX_ATTEMPTS, last_error)
-    return {"transcript": "", "sounds_human": None, "confidence": 0.0, "reasoning": f"error: {last_error}"}
+        transcript = str(await _call_with_rotation(_transcribe)).strip()
+        if not transcript:
+            return {"transcript": "", "sounds_human": None, "confidence": 0.0, "reasoning": "sin habla detectada"}
+
+        async def _judge(client: AsyncGroq):
+            return await client.chat.completions.create(
+                model=JUDGE_MODEL,
+                messages=[{
+                    "role": "user",
+                    "content": JUDGE_PROMPT.format(agent_text=agent_text, transcript=transcript),
+                }],
+                response_format={"type": "json_object"},
+            )
+
+        completion = await _call_with_rotation(_judge)
+        result = json.loads(completion.choices[0].message.content)
+        result["transcript"] = transcript
+        return result
+    except Exception as e:
+        logger.error("Groq fallo al juzgar la respuesta (todas las keys agotadas o error no transitorio): %s", e)
+        return {"transcript": "", "sounds_human": None, "confidence": 0.0, "reasoning": f"error: {e}"}

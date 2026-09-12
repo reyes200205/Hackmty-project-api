@@ -81,8 +81,10 @@ fastapi dev main.py
 O alternativamente usando Uvicorn:
 
 ```bash
-uvicorn main:app --reload
+uvicorn main:app --reload --reload-exclude ".venv/*"
 ```
+
+> ⚠️ Sin `--reload-exclude ".venv/*"`, instalar cualquier paquete nuevo (pip toca miles de archivos dentro de `.venv`) dispara un reinicio completo del servidor y corta cualquier llamada de Twilio en curso. Para la demo en vivo con jueces, mejor correr **sin** `--reload` (`uvicorn main:app`), para cero riesgo de reinicio accidental.
 
 ---
 
