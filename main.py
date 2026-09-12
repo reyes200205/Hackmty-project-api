@@ -40,11 +40,15 @@ def read_root():
 @app.post("/detect", response_model=DetectionResponse)
 async def detect(payload: DetectionRequest):
     try:
-        caller, agent, sample_rate = decode_stereo_wav(payload.audio_b64)
-        is_synthetic, confidence = predict_call(caller, agent, sample_rate)
+        caller, agent, sample_rate = decode_stereo_wav(payload.audio_base64)
+        is_synthetic, prob_synthetic = predict_call(caller, agent, sample_rate)
     except Exception as e:
         logger.exception("Error al procesar el audio en /detect: %s", e)
         raise HTTPException(status_code=400, detail=f"Error al procesar el audio: {e}")
+    # El contrato del reto espera "que tan seguro estas del veredicto que diste" (0.5-1.0),
+    # no P(sintetico) crudo -- confirmado con scripts/check_endpoint.py del repo del reto,
+    # que reconstruye P(sintetico) como confidence si is_synthetic, si no 1-confidence.
+    confidence = prob_synthetic if is_synthetic else (1.0 - prob_synthetic)
     return DetectionResponse(is_synthetic=is_synthetic, confidence=round(confidence, 4))
 
 
