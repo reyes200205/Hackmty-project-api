@@ -5,7 +5,7 @@ from twilio.twiml.voice_response import VoiceResponse
 from customers.deps import get_current_customer
 
 from . import repository
-from .confirmation_service import CONFIRMATION_PHRASE, TransferConfirmationService
+from .confirmation_service import TransferConfirmationService
 from .schema import (
     AccountOut,
     BeneficiaryOut,
@@ -63,7 +63,6 @@ async def create_transfer(payload: TransferCreateRequest, customer: dict = Depen
         beneficiary=beneficiary,
         amount=payload.amount,
         concept=payload.concept,
-        confirmation_phrase=CONFIRMATION_PHRASE,
     )
 
     try:

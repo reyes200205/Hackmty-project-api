@@ -5,6 +5,7 @@ import logging
 from xml.sax.saxutils import escape as xml_escape
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from call_agent.runner import run_call_script
@@ -22,6 +23,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("media-stream")
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(bank_router)
 
 
