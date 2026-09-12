@@ -2,12 +2,14 @@ import asyncio
 import base64
 import json
 import logging
+from xml.sax.saxutils import escape as xml_escape
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
 from call_agent.runner import run_call_script
 from call_agent.session import CallSession
+from customers.lookup import find_by_phone
 from detector.inference import decode_stereo_wav, predict_call
 from detector.schema import DetectionRequest, DetectionResponse
 
@@ -35,11 +37,18 @@ async def detect(payload: DetectionRequest):
 @app.post("/incoming-call")
 async def incoming_call(request: Request):
     host = request.headers.get("host")
+    form = await request.form()
+    caller_number = form.get("From")
+
+    customer = await find_by_phone(caller_number) if caller_number else None
+    first_name = customer["full_name"].split()[0] if customer else ""
+
+    param_tag = f'<Parameter name="customerName" value="{xml_escape(first_name)}" />' if first_name else ""
     twiml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<Response>"
         "<Connect>"
-        f'<Stream url="wss://{host}/media-stream" />'
+        f'<Stream url="wss://{host}/media-stream">{param_tag}</Stream>'
         "</Connect>"
         "</Response>"
     )
@@ -64,7 +73,9 @@ async def media_stream(websocket: WebSocket):
 
             elif event == "start":
                 stream_sid = data["start"]["streamSid"]
-                logger.info("Stream started: %s", stream_sid)
+                custom_params = data["start"].get("customParameters", {})
+                session.customer_name = custom_params.get("customerName") or None
+                logger.info("Stream started: %s (cliente: %s)", stream_sid, session.customer_name or "desconocido")
                 script_task = asyncio.create_task(run_call_script(websocket, stream_sid, session))
 
             elif event == "media":

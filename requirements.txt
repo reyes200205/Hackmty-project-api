@@ -3,3 +3,5 @@ pyttsx3
 audioop-lts
 soundfile
 numpy
+motor
+python-dotenv

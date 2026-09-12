@@ -58,10 +58,12 @@ async def _listen(session: CallSession, max_seconds: float) -> None:
 async def run_call_script(websocket: WebSocket, stream_sid: str, session: CallSession) -> None:
     """Recorre el guion de trampas hablando por el WebSocket de Twilio."""
     try:
+        name_part = f", {session.customer_name}" if session.customer_name else ""
         for step in CALL_SCRIPT:
             if step["type"] == "speak":
-                logger.info("Agente dice: %s", step["text"])
-                ulaw = get_phrase_ulaw(step["text"])
+                text = step["text"].format(name_part=name_part)
+                logger.info("Agente dice: %s", text)
+                ulaw = get_phrase_ulaw(text)
                 await _send_ulaw(websocket, stream_sid, session, ulaw)
             elif step["type"] == "listen":
                 logger.info("Agente escuchando (max %.1fs)", step["seconds"])

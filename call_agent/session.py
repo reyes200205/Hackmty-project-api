@@ -14,6 +14,7 @@ class CallSession:
         self.voice_active = False
         self.last_voice_ts: float | None = None
         self.peak_rms = 0
+        self.customer_name: str | None = None
 
     def ingest_caller_ulaw(self, ulaw_bytes: bytes) -> None:
         pcm = audioop.ulaw2lin(ulaw_bytes, 2)
