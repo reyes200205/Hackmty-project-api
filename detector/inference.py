@@ -1,8 +1,14 @@
 import base64
+import functools
 import io
+from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+
+from detector.features import feature_vector, spectral_flatness
+
+MODEL_PATH = Path(__file__).parent / "model" / "classifier.joblib"
 
 
 def decode_stereo_wav(audio_b64: str) -> tuple[np.ndarray, np.ndarray, int]:
@@ -14,27 +20,27 @@ def decode_stereo_wav(audio_b64: str) -> tuple[np.ndarray, np.ndarray, int]:
     return caller, agent, sample_rate
 
 
-def _spectral_flatness(x: np.ndarray, frame: int = 1024, hop: int = 512) -> float:
-    if len(x) < frame:
-        return 0.0
-    window = np.hanning(frame)
-    flatness_vals = []
-    for start in range(0, len(x) - frame, hop):
-        seg = x[start:start + frame] * window
-        mag = np.abs(np.fft.rfft(seg)) + 1e-10
-        gm = np.exp(np.mean(np.log(mag)))
-        am = np.mean(mag)
-        flatness_vals.append(gm / am)
-    return float(np.mean(flatness_vals)) if flatness_vals else 0.0
+@functools.lru_cache(maxsize=1)
+def _load_model():
+    if not MODEL_PATH.exists():
+        return None
+    import joblib
+    return joblib.load(MODEL_PATH)
 
 
 def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tuple[bool, float]:
-    """Baseline A1: heuristica de planitud espectral del canal del caller.
-    TODO(A2): reemplazar por MFCC + jitter/shimmer + piso de ruido/silencio digital
-    + clasificador entrenado sobre el dataset. Esto solo garantiza una respuesta
-    evaluable desde el dia 1.
+    """A2: MFCC + pitch/jitter/shimmer + piso de ruido/silencio digital -> clasificador entrenado.
+    Si detector/model/classifier.joblib no existe todavia (falta correr detector/train.py),
+    cae de vuelta a la heuristica de planitud espectral de A1 para no romper el endpoint.
     """
-    flatness = _spectral_flatness(caller)
-    confidence = float(np.clip(flatness * 4.0, 0.0, 1.0))
+    bundle = _load_model()
+    if bundle is None:
+        flatness = spectral_flatness(caller)
+        confidence = float(np.clip(flatness * 4.0, 0.0, 1.0))
+        return confidence >= 0.5, confidence
+
+    vec = feature_vector(caller, sample_rate).reshape(1, -1)
+    vec_scaled = bundle["scaler"].transform(vec)
+    confidence = float(bundle["model"].predict_proba(vec_scaled)[0, 1])
     is_synthetic = confidence >= 0.5
     return is_synthetic, confidence

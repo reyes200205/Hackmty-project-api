@@ -5,3 +5,7 @@ soundfile
 numpy
 motor
 python-dotenv
+scipy
+scikit-learn
+lightgbm
+joblib
