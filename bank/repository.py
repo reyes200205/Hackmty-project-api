@@ -10,6 +10,7 @@ from .db import (
     get_transactions_collection,
     get_transfers_collection,
 )
+from .phrase_generator import generate_confirmation_phrase
 
 
 class InsufficientFundsError(Exception):
@@ -45,7 +46,7 @@ async def get_beneficiary(customer_email: str, beneficiary_id: str) -> dict | No
 
 
 async def create_transfer(
-    customer_email: str, beneficiary: dict, amount: float, concept: str, confirmation_phrase: str,
+    customer_email: str, beneficiary: dict, amount: float, concept: str, confirmation_phrase: str | None = None,
 ) -> dict:
     now = datetime.now(timezone.utc)
     doc = {
@@ -56,7 +57,7 @@ async def create_transfer(
         "amount": round(amount, 2),
         "concept": concept,
         "status": "pending",
-        "confirmation_phrase": confirmation_phrase,
+        "confirmation_phrase": confirmation_phrase or generate_confirmation_phrase(),
         "confirmation_token": secrets.token_urlsafe(24),
         "call_sid": None,
         "created_at": now,

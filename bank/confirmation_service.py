@@ -10,8 +10,6 @@ from .twilio_service import TwilioService
 
 logger = logging.getLogger("bank")
 
-CONFIRMATION_PHRASE = "CONFIRMO LA TRANSFERENCIA"
-
 
 def _base_url() -> str:
     return os.environ["PUBLIC_BASE_URL"].rstrip("/")
