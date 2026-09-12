@@ -26,7 +26,10 @@ class TwilioService:
             url=voice_webhook_url,
             method="POST",
             status_callback=status_webhook_url,
-            status_callback_event=["completed", "no-answer", "busy", "failed", "canceled"],
+            # Twilio solo acepta estos nombres de evento (no cada CallStatus posible).
+            # "completed" se dispara al terminar la llamada por cualquier motivo;
+            # el motivo real (no-answer/busy/failed/etc) viene en el campo CallStatus.
+            status_callback_event=["completed"],
             status_callback_method="POST",
         )
         return call.sid
