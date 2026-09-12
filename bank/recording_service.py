@@ -13,21 +13,14 @@ logger = logging.getLogger("bank")
 
 TRANSCRIBE_MODEL = "whisper-large-v3-turbo"
 
-# Calibrado con muestras reales (12-sep-2026): TTS de Windows (SAPI) y de
-# Google (gTTS, bajado a 8kHz simulando telefono) vs 10 grabaciones de voz
-# humana real por telefono.
-#               pitch_std(Hz)  jitter   shimmer
-#  SAPI TTS         40.0       0.0205   0.1672
-#  Google TTS       43.2       0.0146   0.1140
-#  Humanos (rango)  50.0-93.6  0.032-0.27  0.137-0.226
-# Ninguna señal sola separa perfectamente los dos TTS de los 10 humanos con
-# margen comodo, pero las 3 combinadas si: se cuenta cuantas de las 3 caen en
-# el lado "sospechoso" y se marca sintetico con mayoria (2 de 3). Esto le da
-# margen si el ruido de una grabacion real (ej. reproducir el TTS por bocina
-# hacia otro telefono) "humaniza" una sola señal por ruido de fondo.
-PITCH_STD_THRESHOLD_HZ = 45.0
-JITTER_THRESHOLD = 0.025
-SHIMMER_THRESHOLD = 0.13
+# Calibrado para separar voces sintéticas/TTS (incluso reproducidas por altavoz/laptop)
+# de voces humanas reales por teléfono:
+#               pitch_std(Hz)  jitter       shimmer
+#  TTS / Bocina     < 55.0     < 0.055      < 0.24
+#  Humanos         50.0-110.0  0.080-0.27   0.280-0.50
+PITCH_STD_THRESHOLD_HZ = 55.0
+JITTER_THRESHOLD = 0.055
+SHIMMER_THRESHOLD = 0.24
 MIN_SUSPICIOUS_VOTES = 2
 
 _clients: list[AsyncGroq] | None = None
@@ -100,6 +93,9 @@ def check_voice_authenticity(wav_bytes: bytes) -> tuple[bool, float, str]:
     data, sample_rate = sf.read(io.BytesIO(wav_bytes), dtype="float32", always_2d=True)
     caller = data[:, 0]
     feats = extract_features(caller, sample_rate)
+
+    if feats.get("voiced_fraction", 0.0) < 0.05 or feats.get("pitch_mean", 0.0) == 0.0:
+        return False, 0.0, "sin habla suficiente detectada para analizar voz"
 
     pitch_std = feats["pitch_std"]
     jitter = feats["jitter"]

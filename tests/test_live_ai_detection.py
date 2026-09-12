@@ -163,3 +163,43 @@ def test_websocket_media_stream_lifecycle():
             }))
             ws.send_text(json.dumps({"event": "stop"}))
 
+
+def test_check_voice_authenticity_silence_vs_synthetic():
+    import io
+    import soundfile as sf
+    from bank.recording_service import check_voice_authenticity
+
+    # 1. Silencio
+    buf_silence = io.BytesIO()
+    sf.write(buf_silence, np.zeros(8000, dtype=np.float32), 8000, format="WAV")
+    is_synth, conf, reason = check_voice_authenticity(buf_silence.getvalue())
+    assert is_synth is False
+    assert conf == 0.0
+    assert "sin habla" in reason
+
+    # 2. Voz sintética (bajo pitch_std, bajo jitter, bajo shimmer)
+    with patch("detector.features.extract_features", return_value={
+        "voiced_fraction": 0.8,
+        "pitch_mean": 180.0,
+        "pitch_std": 38.0,   # < 55.0
+        "jitter": 0.032,     # < 0.055
+        "shimmer": 0.19,     # < 0.24
+    }):
+        is_synth, conf, reason = check_voice_authenticity(buf_silence.getvalue())
+        assert is_synth is True
+        assert conf >= 0.8
+        assert "3/3 señales sospechosas" in reason
+
+    # 3. Voz humana (alto pitch_std, alto jitter, alto shimmer)
+    with patch("detector.features.extract_features", return_value={
+        "voiced_fraction": 0.8,
+        "pitch_mean": 210.0,
+        "pitch_std": 85.0,   # > 55.0
+        "jitter": 0.150,     # > 0.055
+        "shimmer": 0.38,     # > 0.24
+    }):
+        is_synth, conf, reason = check_voice_authenticity(buf_silence.getvalue())
+        assert is_synth is False
+        assert "0/3 señales sospechosas" in reason
+
+
