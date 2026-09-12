@@ -16,11 +16,13 @@ from customers.schema import CustomerOut, LoginRequest, LoginResponse
 from customers.tokens import create_access_token
 from detector.inference import decode_stereo_wav, predict_call
 from detector.schema import DetectionRequest, DetectionResponse
+from bank.router import router as bank_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("media-stream")
 
 app = FastAPI()
+app.include_router(bank_router)
 
 
 @app.get("/")

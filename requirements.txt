@@ -15,3 +15,7 @@ groq
 pyjwt
 email-validator
 lightgbm
+twilio
+pytest
+pytest-asyncio
+httpx
