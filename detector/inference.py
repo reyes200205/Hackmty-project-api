@@ -13,6 +13,8 @@ MODEL_PATH = Path(__file__).parent / "model" / "classifier.joblib"
 
 def decode_stereo_wav(audio_b64: str) -> tuple[np.ndarray, np.ndarray, int]:
     """Decodifica un WAV base64 (canal 0 = caller, canal 1 = agente)."""
+    if "," in audio_b64:
+        audio_b64 = audio_b64.split(",", 1)[1]
     wav_bytes = base64.b64decode(audio_b64)
     data, sample_rate = sf.read(io.BytesIO(wav_bytes), dtype="float32", always_2d=True)
     caller = data[:, 0]

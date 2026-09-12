@@ -4,12 +4,16 @@ import json
 import logging
 from xml.sax.saxutils import escape as xml_escape
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
 from call_agent.runner import run_call_script
 from call_agent.session import CallSession
-from customers.lookup import find_by_phone
+from customers.auth import verify_password
+from customers.deps import get_current_customer
+from customers.lookup import find_by_email, find_by_phone
+from customers.schema import CustomerOut, LoginRequest, LoginResponse
+from customers.tokens import create_access_token
 from detector.inference import decode_stereo_wav, predict_call
 from detector.schema import DetectionRequest, DetectionResponse
 
@@ -30,8 +34,35 @@ async def detect(payload: DetectionRequest):
         caller, agent, sample_rate = decode_stereo_wav(payload.audio_b64)
         is_synthetic, confidence = predict_call(caller, agent, sample_rate)
     except Exception as e:
+        logger.exception("Error al procesar el audio en /detect: %s", e)
         raise HTTPException(status_code=400, detail=f"Error al procesar el audio: {e}")
     return DetectionResponse(is_synthetic=is_synthetic, confidence=round(confidence, 4))
+
+
+@app.post("/auth/login", response_model=LoginResponse)
+async def login(payload: LoginRequest):
+    customer = await find_by_email(payload.email)
+    if not customer or not verify_password(payload.password, customer["password_hash"]):
+        raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos")
+
+    token = create_access_token(customer["email"], customer["full_name"])
+    return LoginResponse(
+        access_token=token,
+        customer=CustomerOut(
+            full_name=customer["full_name"],
+            email=customer["email"],
+            phone_number=customer["phone_number"],
+        ),
+    )
+
+
+@app.get("/auth/me", response_model=CustomerOut)
+async def me(customer: dict = Depends(get_current_customer)):
+    return CustomerOut(
+        full_name=customer["full_name"],
+        email=customer["email"],
+        phone_number=customer["phone_number"],
+    )
 
 
 @app.post("/incoming-call")

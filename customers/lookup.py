@@ -12,3 +12,9 @@ async def find_by_card_last4(card_last4: str) -> dict | None:
     if not card_last4:
         return None
     return await get_customers_collection().find_one({"card_last4": card_last4})
+
+
+async def find_by_email(email: str) -> dict | None:
+    if not email:
+        return None
+    return await get_customers_collection().find_one({"email": email.strip().lower()})

@@ -11,3 +11,6 @@ scikit-learn
 joblib
 google-genai
 groq
+pyjwt
+email-validator
+lightgbm
