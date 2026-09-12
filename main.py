@@ -1,8 +1,11 @@
+import asyncio
 import json
 import logging
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
+
+from call_agent.runner import run_call_script
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("media-stream")
@@ -33,6 +36,7 @@ async def incoming_call(request: Request):
 async def media_stream(websocket: WebSocket):
     await websocket.accept()
     stream_sid = None
+    script_task: asyncio.Task | None = None
 
     try:
         while True:
@@ -46,15 +50,10 @@ async def media_stream(websocket: WebSocket):
             elif event == "start":
                 stream_sid = data["start"]["streamSid"]
                 logger.info("Stream started: %s", stream_sid)
+                script_task = asyncio.create_task(run_call_script(websocket, stream_sid))
 
             elif event == "media":
-                # Loopback: reenvía el mismo audio de vuelta para escuchar el eco.
-                payload = data["media"]["payload"]
-                await websocket.send_text(json.dumps({
-                    "event": "media",
-                    "streamSid": stream_sid,
-                    "media": {"payload": payload},
-                }))
+                pass  # el audio del caller se procesara en la fase de buffering/mux
 
             elif event == "stop":
                 logger.info("Stream stopped: %s", stream_sid)
@@ -62,3 +61,6 @@ async def media_stream(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected: %s", stream_sid)
+    finally:
+        if script_task and not script_task.done():
+            script_task.cancel()
