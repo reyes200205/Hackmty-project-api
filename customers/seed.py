@@ -10,17 +10,17 @@ from .phone import normalize_phone
 
 DEMO_CUSTOMERS = [
     {
-        "full_name": "María Fernanda López",
-        "email": "maria.lopez@example.com",
+        "full_name": "Jorge Alejandro Renteria Reyes",
+        "email": "jorgerenteriareyes4@gmail.com",
         "password": "demo1234",
-        "phone_number": "+19151234567",
+        "phone_number": "+528714613171",
         "card_last4": "4242",
     },
     {
-        "full_name": "Carlos Alberto Reyes",
-        "email": "carlos.reyes@example.com",
+        "full_name": "VIviana",
+        "email": "dan@example.com",
         "password": "demo1234",
-        "phone_number": "+19157654321",
+        "phone_number": "+528713352950",
         "card_last4": "1881",
     },
 ]
