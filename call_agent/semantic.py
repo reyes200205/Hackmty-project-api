@@ -14,7 +14,7 @@ load_dotenv()
 
 logger = logging.getLogger("gemini-judge")
 
-MODEL = "gemini-3.6-flash"
+MODEL = "gemini-3.5-flash-lite"  # mas rapido y con mas margen de cuota que 3.6-flash; sobra para transcribir+juzgar
 MIN_AUDIO_SECONDS = 0.3
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = 1.5  # se multiplica por el numero de intento (1.5s, 3s)
