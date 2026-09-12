@@ -1,9 +1,9 @@
-import json
+import io
 import logging
 import os
 
 import httpx
-import numpy as np
+import soundfile as sf
 from dotenv import load_dotenv
 from groq import AsyncGroq
 
@@ -12,32 +12,13 @@ load_dotenv()
 logger = logging.getLogger("bank")
 
 TRANSCRIBE_MODEL = "whisper-large-v3-turbo"
-JUDGE_MODEL = "openai/gpt-oss-120b"
 
-JUDGE_PROMPT = """Eres un analista de fraude de un banco. Un cliente acaba de decir una \
-frase de confirmacion por telefono para autorizar una transferencia.
-
-Frase que se le pidio decir: "{expected}"
-Transcripcion de lo que dijo: "{transcript}"
-
-Metadatos tecnicos calculados directamente del audio (no del texto):
-- Duracion: {duration:.1f} segundos
-- Confianza promedio de la transcripcion (avg_logprob; entre mas cercano a 0, \
-mas "limpia"/uniforme sono la señal para el reconocedor de voz): {avg_logprob}
-- Variacion de esa confianza entre segmentos (poca variacion = señal muy uniforme, \
-tipica de audio sintetico; mucha variacion = mas tipico de habla humana real): {avg_logprob_std}
-- Probabilidad de silencio/ruido detectada: {no_speech_prob}
-
-Una voz generada por texto-a-voz (TTS) suele producir una señal digital muy limpia y \
-uniforme, sin el ruido de fondo, las micro-variaciones de tono ni las imperfecciones \
-tipicas de una persona real hablando por un telefono normal.
-
-Importante: que el texto coincida exactamente con la frase pedida NO es evidencia de \
-fraude por si solo -- una persona real tambien puede repetirla correctamente. Enfocate \
-en si las caracteristicas TECNICAS de la señal sugieren un origen sintetico/digital.
-
-Responde SOLO en JSON: {{"is_synthetic": true o false, "confidence": 0.0 a 1.0, "reasoning": "..."}}
-"""
+# Calibrado con muestras reales (12-sep-2026): 1 TTS limpio (pitch_std~40Hz,
+# jitter~0.02) vs 10 grabaciones de voz humana real por telefono (pitch_std
+# 50-94Hz, jitter 0.03-0.27). Es un heuristico con pocos datos de calibracion,
+# no un clasificador entrenado -- puede necesitar ajuste con mas muestras.
+PITCH_STD_THRESHOLD_HZ = 45.0
+JITTER_THRESHOLD = 0.025
 
 _clients: list[AsyncGroq] | None = None
 _next_idx = 0
@@ -70,78 +51,53 @@ async def download_recording(recording_url: str) -> bytes:
         return resp.content
 
 
-async def _call_with_rotation(fn):
+async def transcribe_wav(wav_bytes: bytes) -> str:
+    """Transcribe con Whisper (Groq), rotando entre las api keys disponibles."""
     clients = _get_clients()
     last_error: Exception | None = None
     for _ in range(len(clients)):
         client = await _next_client()
         try:
-            return await fn(client)
+            result = await client.audio.transcriptions.create(
+                file=("audio.wav", wav_bytes),
+                model=TRANSCRIBE_MODEL,
+                language="es",
+                response_format="text",
+            )
+            return str(result).strip()
         except Exception as e:
             last_error = e
-            logger.warning("Groq fallo con una key, rotando a la siguiente: %s", e)
-    raise last_error
+            logger.warning("Groq transcripcion fallo con una key, rotando: %s", e)
+    logger.error("Transcripcion fallo con todas las keys: %s", last_error)
+    return ""
 
 
-async def transcribe_with_prosody(wav_bytes: bytes) -> tuple[str, dict]:
-    """Transcribe con Whisper (Groq) y de paso extrae metricas de prosodia
-    (avg_logprob, no_speech_prob) que Whisper calcula a partir del AUDIO real,
-    no del texto -- Groq no tiene un modelo de chat que pueda 'escuchar' tono
-    directamente como Gemini, asi que esto es la aproximacion mas cercana con
-    las herramientas que tenemos."""
-    async def _transcribe(client: AsyncGroq):
-        return await client.audio.transcriptions.create(
-            file=("audio.wav", wav_bytes),
-            model=TRANSCRIBE_MODEL,
-            language="es",
-            response_format="verbose_json",
-        )
+def check_voice_authenticity(wav_bytes: bytes) -> tuple[bool, float, str]:
+    """Heuristica DETERMINISTICA basada en features acusticas crudas (pitch_std,
+    jitter) calculadas directo de la señal con detector.features (funciones
+    puras de procesamiento de señal de Alessandro/Gera, NO su modelo entrenado
+    -- ese esta calibrado para llamadas largas del dataset del reto y no
+    generaliza a clips cortos de una sola frase, daba siempre ~0.01).
 
-    try:
-        result = await _call_with_rotation(_transcribe)
-    except Exception as e:
-        logger.error("Transcripcion fallo con todas las keys: %s", e)
-        return "", {}
+    Tambien se probo un juicio de Groq con metadatos de Whisper, pero esos
+    metadatos salen identicos (varianza 0) para cualquier clip corto de un
+    solo segmento, sin importar quien hable -- por eso se descarto."""
+    from detector.features import extract_features
 
-    text = (result.text or "").strip()
-    segments = result.segments or []
-    logprobs = [s["avg_logprob"] for s in segments if s.get("avg_logprob") is not None]
-    no_speech = [s["no_speech_prob"] for s in segments if s.get("no_speech_prob") is not None]
+    data, sample_rate = sf.read(io.BytesIO(wav_bytes), dtype="float32", always_2d=True)
+    caller = data[:, 0]
+    feats = extract_features(caller, sample_rate)
 
-    prosody = {
-        "duration": float(result.duration or 0.0),
-        "avg_logprob": float(np.mean(logprobs)) if logprobs else None,
-        "avg_logprob_std": float(np.std(logprobs)) if len(logprobs) > 1 else 0.0,
-        "no_speech_prob": float(max(no_speech)) if no_speech else None,
-    }
-    return text, prosody
+    pitch_std = feats["pitch_std"]
+    jitter = feats["jitter"]
 
+    suspicious_pitch = pitch_std < PITCH_STD_THRESHOLD_HZ
+    suspicious_jitter = jitter < JITTER_THRESHOLD
+    is_synthetic = suspicious_pitch and suspicious_jitter
 
-async def judge_voice_authenticity(expected_phrase: str, transcript: str, prosody: dict) -> tuple[bool, float, str]:
-    """Juicio 'best effort' de si la voz suena sintetica, combinando el texto
-    con metadatos derivados del audio. Limitacion conocida: si el TTS repite
-    la frase exacta pedida, el texto por si solo no lo delata -- este juicio
-    depende de que las metricas de prosodia se vean lo bastante distintas."""
-    prompt = JUDGE_PROMPT.format(
-        expected=expected_phrase,
-        transcript=transcript,
-        duration=prosody.get("duration") or 0.0,
-        avg_logprob=prosody.get("avg_logprob"),
-        avg_logprob_std=prosody.get("avg_logprob_std"),
-        no_speech_prob=prosody.get("no_speech_prob"),
+    confidence = 0.55 + 0.2 * (suspicious_pitch + suspicious_jitter) if is_synthetic else 0.3
+    reasoning = (
+        f"pitch_std={pitch_std:.1f}Hz (umbral {PITCH_STD_THRESHOLD_HZ}), "
+        f"jitter={jitter:.4f} (umbral {JITTER_THRESHOLD})"
     )
-
-    async def _judge(client: AsyncGroq):
-        return await client.chat.completions.create(
-            model=JUDGE_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-
-    try:
-        completion = await _call_with_rotation(_judge)
-        result = json.loads(completion.choices[0].message.content)
-        return bool(result.get("is_synthetic", False)), float(result.get("confidence", 0.0)), result.get("reasoning", "")
-    except Exception as e:
-        logger.error("Juicio de autenticidad de voz fallo con todas las keys: %s", e)
-        return False, 0.0, f"error: {e}"
+    return is_synthetic, round(confidence, 2), reasoning

@@ -1,0 +1,112 @@
+[
+  {
+    "sid": "RE195e2905240011b0d0b7897c73424ddd",
+    "transcript": "Confirmo la transferencia con clave águila desierto.",
+    "pitch_mean": 220.2,
+    "pitch_std": 90.23,
+    "jitter": 0.1781,
+    "shimmer": 0.2082,
+    "voiced_fraction": 0.552,
+    "spectral_flatness": 0.4728,
+    "digital_silence_ratio": 0.126
+  },
+  {
+    "sid": "REbdbff37855942e94caadc1e96f6cd986",
+    "transcript": "Confirmo la transferencia con clave pantamontana. Escucha la música ahora.",
+    "pitch_mean": 182.9,
+    "pitch_std": 87.73,
+    "jitter": 0.1732,
+    "shimmer": 0.1966,
+    "voiced_fraction": 0.56,
+    "spectral_flatness": 0.2873,
+    "digital_silence_ratio": 0.033
+  },
+  {
+    "sid": "RE41b5b607b4289d43e6f3d77025bc7949",
+    "transcript": "Confirmo la transferencia con clave Lobo Valle.",
+    "pitch_mean": 216.3,
+    "pitch_std": 93.63,
+    "jitter": 0.112,
+    "shimmer": 0.137,
+    "voiced_fraction": 0.355,
+    "spectral_flatness": 0.6355,
+    "digital_silence_ratio": 0.48
+  },
+  {
+    "sid": "RE6a652d44835c16d8ab2a99d658199587",
+    "transcript": "Confirmo la transferencia con clave jaguar volcán.",
+    "pitch_mean": 177.4,
+    "pitch_std": 72.75,
+    "jitter": 0.2163,
+    "shimmer": 0.2261,
+    "voiced_fraction": 0.484,
+    "spectral_flatness": 0.5027,
+    "digital_silence_ratio": 0.187
+  },
+  {
+    "sid": "RE78220bd9f6f1395d8a6f2c0d9a7fbdd1",
+    "transcript": "Confirmo transferencia con clave Delfín Océano.",
+    "pitch_mean": 221.0,
+    "pitch_std": 57.54,
+    "jitter": 0.099,
+    "shimmer": 0.1812,
+    "voiced_fraction": 0.57,
+    "spectral_flatness": 0.3928,
+    "digital_silence_ratio": 0.01
+  },
+  {
+    "sid": "REb0fe7fe0da2653cbd88318e6607918be",
+    "transcript": "Confirmo transferencia con clave Delfín Volcán.",
+    "pitch_mean": 244.0,
+    "pitch_std": 85.41,
+    "jitter": 0.2734,
+    "shimmer": 0.222,
+    "voiced_fraction": 0.476,
+    "spectral_flatness": 0.4781,
+    "digital_silence_ratio": 0.032
+  },
+  {
+    "sid": "RE6987d6a74cec4a7031590ca54cae1b47",
+    "transcript": "Confirmo la transferencia con clave Aguila-Montana",
+    "pitch_mean": 233.9,
+    "pitch_std": 50.04,
+    "jitter": 0.0317,
+    "shimmer": 0.1822,
+    "voiced_fraction": 0.584,
+    "spectral_flatness": 0.4596,
+    "digital_silence_ratio": 0.088
+  },
+  {
+    "sid": "RE2d908e143a1a2ec66454467a3eb25984",
+    "transcript": "Confirmo la transferencia con clave Jaguar Montana. Confirmo la transferencia con...",
+    "pitch_mean": 239.8,
+    "pitch_std": 53.16,
+    "jitter": 0.0685,
+    "shimmer": 0.1439,
+    "voiced_fraction": 0.577,
+    "spectral_flatness": 0.488,
+    "digital_silence_ratio": 0.108
+  },
+  {
+    "sid": "REdc63f40ca806f8e545de7844d0df21e4",
+    "transcript": "Confirmo.",
+    "pitch_mean": 243.1,
+    "pitch_std": 65.93,
+    "jitter": 0.1674,
+    "shimmer": 0.1758,
+    "voiced_fraction": 0.57,
+    "spectral_flatness": 0.3864,
+    "digital_silence_ratio": 0.049
+  },
+  {
+    "sid": "RE5241be6bead500c3f7a5ee5d33a67e6c",
+    "transcript": "Hola, te amo.",
+    "pitch_mean": 212.7,
+    "pitch_std": 86.85,
+    "jitter": 0.2008,
+    "shimmer": 0.1724,
+    "voiced_fraction": 0.477,
+    "spectral_flatness": 0.4989,
+    "digital_silence_ratio": 0.091
+  }
+]

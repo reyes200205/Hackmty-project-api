@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ from twilio.twiml.voice_response import VoiceResponse
 from . import repository
 from .confirmation_logs import log_confirmation_attempt
 from .phrase_match import phrase_matches
-from .recording_service import download_recording, judge_voice_authenticity, transcribe_with_prosody
+from .recording_service import check_voice_authenticity, download_recording, transcribe_wav
 from .twilio_service import TwilioService
 
 logger = logging.getLogger("bank")
@@ -113,12 +114,12 @@ class TransferConfirmationService:
         transcript = ""
         try:
             wav_bytes = await download_recording(recording_url)
-            transcript, prosody = await transcribe_with_prosody(wav_bytes)
+            transcript = await transcribe_wav(wav_bytes)
             phrase_ok = phrase_matches(transfer["confirmation_phrase"], transcript)
-            is_synthetic, voice_confidence, voice_reasoning = await judge_voice_authenticity(
-                transfer["confirmation_phrase"], transcript, prosody,
+            is_synthetic, voice_confidence, voice_reasoning = await asyncio.to_thread(
+                check_voice_authenticity, wav_bytes,
             )
-            logger.info("Transferencia %s: juicio de voz -> %s", transfer_id, voice_reasoning)
+            logger.info("Transferencia %s: analisis de voz -> %s", transfer_id, voice_reasoning)
         except Exception:
             logger.exception("Fallo el analisis de la grabacion para transferencia %s", transfer_id)
             await repository.update_transfer_status(
