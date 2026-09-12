@@ -2,13 +2,17 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from twilio.twiml.voice_response import Gather, VoiceResponse
+from twilio.twiml.voice_response import VoiceResponse
 
 from . import repository
+from .confirmation_logs import log_confirmation_attempt
 from .phrase_match import phrase_matches
+from .recording_service import download_recording, judge_voice_authenticity, transcribe_with_prosody
 from .twilio_service import TwilioService
 
 logger = logging.getLogger("bank")
+
+MAX_RESULT_POLL_ATTEMPTS = 5
 
 
 def _base_url() -> str:
@@ -34,56 +38,139 @@ class TransferConfirmationService:
         if not applied:
             logger.warning("No se pudo mover transferencia %s a confirmation_pending (estado ya cambio)", transfer_id)
 
-    def build_gather_twiml(self, transfer: dict) -> str:
+    def build_confirmation_twiml(self, transfer: dict) -> str:
+        """Pide la frase y GRABA la respuesta (no solo la transcribe) para
+        poder analizar despues si la voz suena sintetica."""
         vr = VoiceResponse()
-        gather = Gather(
-            input="speech",
-            language="es-MX",
-            action=f"{_base_url()}/api/transfers/webhooks/confirm/{transfer['transfer_id']}/{transfer['confirmation_token']}",
-            method="POST",
-            speech_timeout="auto",
-        )
-        gather.say(
+        vr.say(
             f"Para confirmar la transferencia de {transfer['amount']:.2f} pesos a {transfer['beneficiary_name']}, "
             f"diga: {transfer['confirmation_phrase']}.",
             language="es-MX",
         )
-        vr.append(gather)
+        vr.record(
+            max_length=12,
+            play_beep=True,
+            trim="trim-silence",
+            action=f"{_base_url()}/api/transfers/webhooks/confirm/{transfer['transfer_id']}/{transfer['confirmation_token']}",
+            method="POST",
+        )
         vr.say("No se recibio respuesta. La transferencia no sera confirmada.", language="es-MX")
         return str(vr)
 
-    async def handle_confirmation_result(self, transfer_id: str, speech_result: str) -> dict:
+    def build_waiting_twiml(self, transfer: dict) -> str:
+        """Se reproduce en cuanto termina la grabacion, mientras el analisis
+        (transcripcion + deteccion de voz sintetica) corre en background."""
+        vr = VoiceResponse()
+        vr.say("Gracias. Estamos validando su solicitud, espere un momento por favor.", language="es-MX")
+        vr.pause(length=3)
+        vr.redirect(
+            f"{_base_url()}/api/transfers/webhooks/result/{transfer['transfer_id']}/{transfer['confirmation_token']}?attempt=1",
+            method="POST",
+        )
+        return str(vr)
+
+    def build_result_twiml(self, transfer: dict, attempt: int) -> str:
+        vr = VoiceResponse()
+        status = transfer["status"]
+
+        if status == "completed":
+            vr.say("Listo, su transferencia ha sido confirmada y procesada exitosamente.", language="es-MX")
+        elif status == "rejected":
+            reason = transfer.get("failure_reason", "") or ""
+            if "sintetic" in reason:
+                vr.say(
+                    "No pudimos verificar que la voz sea autentica. La transferencia no sera procesada.",
+                    language="es-MX",
+                )
+            else:
+                vr.say("La frase no coincide. La transferencia no sera procesada.", language="es-MX")
+        elif status == "failed":
+            vr.say("Ocurrio un error al procesar su solicitud.", language="es-MX")
+        elif attempt < MAX_RESULT_POLL_ATTEMPTS:
+            vr.pause(length=2)
+            vr.redirect(
+                f"{_base_url()}/api/transfers/webhooks/result/{transfer['transfer_id']}/{transfer['confirmation_token']}"
+                f"?attempt={attempt + 1}",
+                method="POST",
+            )
+        else:
+            vr.say(
+                "La validacion esta tomando mas tiempo de lo esperado. Le notificaremos el resultado en la aplicacion.",
+                language="es-MX",
+            )
+        return str(vr)
+
+    async def handle_recording(self, transfer_id: str, recording_url: str, call_sid: str) -> None:
+        """Corre en background: descarga la grabacion, transcribe, valida la
+        frase Y valida que la voz no sea sintetica (reutilizando el
+        clasificador acustico real de deteccion de deepfakes), y decide si
+        completar la transferencia. Todo queda registrado en el log."""
         transfer = await repository.get_transfer(transfer_id)
         if transfer is None or transfer["status"] != "confirmation_pending":
-            logger.warning("Webhook de confirmacion ignorado para %s (estado actual: %s)",
-                            transfer_id, transfer["status"] if transfer else "no existe")
-            return {"status": "ignored"}
+            logger.warning("Grabacion recibida para transferencia %s en estado inesperado", transfer_id)
+            return
 
-        if phrase_matches(transfer["confirmation_phrase"], speech_result):
+        transcript = ""
+        try:
+            wav_bytes = await download_recording(recording_url)
+            transcript, prosody = await transcribe_with_prosody(wav_bytes)
+            phrase_ok = phrase_matches(transfer["confirmation_phrase"], transcript)
+            is_synthetic, voice_confidence, voice_reasoning = await judge_voice_authenticity(
+                transfer["confirmation_phrase"], transcript, prosody,
+            )
+            logger.info("Transferencia %s: juicio de voz -> %s", transfer_id, voice_reasoning)
+        except Exception:
+            logger.exception("Fallo el analisis de la grabacion para transferencia %s", transfer_id)
+            await repository.update_transfer_status(
+                transfer_id, "confirmation_pending", "failed",
+                {"failure_reason": "error al analizar la grabacion"},
+            )
+            await log_confirmation_attempt(
+                transfer_id, call_sid, recording_url, transcript, False, None, None, "failed", "error de analisis",
+            )
+            return
+
+        if not phrase_ok:
+            await repository.update_transfer_status(
+                transfer_id, "confirmation_pending", "rejected",
+                {"heard": transcript, "failure_reason": "frase incorrecta"},
+            )
+            decision, reason = "rejected", "frase incorrecta"
+        elif is_synthetic:
+            await repository.update_transfer_status(
+                transfer_id, "confirmation_pending", "rejected",
+                {"heard": transcript, "failure_reason": "voz sintetica sospechosa", "voice_confidence": voice_confidence},
+            )
+            decision, reason = "rejected", "voz sintetica sospechosa"
+        else:
             try:
                 new_balance = await repository.atomic_debit_and_log(
                     transfer["customer_email"], transfer["amount"], transfer["concept"], transfer_id,
                 )
+                await repository.update_transfer_status(
+                    transfer_id, "confirmation_pending", "completed",
+                    {
+                        "completed_at": datetime.now(timezone.utc),
+                        "resulting_balance": new_balance,
+                        "heard": transcript,
+                        "voice_confidence": voice_confidence,
+                    },
+                )
+                decision, reason = "completed", None
             except repository.InsufficientFundsError:
                 await repository.update_transfer_status(
                     transfer_id, "confirmation_pending", "failed",
-                    {"failure_reason": "saldo insuficiente al momento de confirmar"},
+                    {"failure_reason": "saldo insuficiente al confirmar"},
                 )
-                logger.error("Transferencia %s fallo por saldo insuficiente al confirmar", transfer_id)
-                return {"status": "failed"}
+                decision, reason = "failed", "saldo insuficiente"
 
-            await repository.update_transfer_status(
-                transfer_id, "confirmation_pending", "completed",
-                {"completed_at": datetime.now(timezone.utc), "resulting_balance": new_balance, "heard": speech_result},
-            )
-            logger.info("Transferencia %s confirmada y completada, nuevo saldo=%.2f", transfer_id, new_balance)
-            return {"status": "completed"}
-
-        await repository.update_transfer_status(
-            transfer_id, "confirmation_pending", "rejected", {"heard": speech_result},
+        await log_confirmation_attempt(
+            transfer_id, call_sid, recording_url, transcript, phrase_ok, is_synthetic, voice_confidence, decision, reason,
         )
-        logger.info("Transferencia %s rechazada, frase no coincide (escuchado: %r)", transfer_id, speech_result)
-        return {"status": "rejected"}
+        logger.info(
+            "Transferencia %s -> %s (frase_ok=%s, voz_sintetica=%s, confianza=%.2f)",
+            transfer_id, decision, phrase_ok, is_synthetic, voice_confidence or 0.0,
+        )
 
     async def handle_call_status(self, transfer_id: str, call_status: str) -> None:
         if call_status in ("no-answer", "busy", "failed", "canceled"):
