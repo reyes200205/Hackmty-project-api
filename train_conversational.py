@@ -1,17 +1,17 @@
-import json
 from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import soundfile as sf
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
-from detector.conversational import extract_features_from_turns
+from detector.conversational import extract_conversational_features
 
 HACKMTY_DIR = Path("../hackmty26")
 MANIFEST_PATH = HACKMTY_DIR / "manifest.csv"
-TURNS_DIR = HACKMTY_DIR / "turns"
+AUDIO_DIR = HACKMTY_DIR / "audio"
 MODEL_DIR = Path("detector")
 MODEL_DIR.mkdir(exist_ok=True)
 MODEL_FILE = MODEL_DIR / "conversational_model.joblib"
@@ -35,14 +35,14 @@ def main():
     data_rows = []
 
     for _, row in manifest.iterrows():
-        turn_file = TURNS_DIR / f"{row['anon_id']}.json"
-        if not turn_file.exists():
+        wav_file = AUDIO_DIR / f"{row['anon_id']}.wav"
+        if not wav_file.exists():
             continue
 
-        with open(turn_file, "r") as f:
-            data = json.load(f)
+        data_wav, sample_rate = sf.read(wav_file, dtype="float32", always_2d=True)
+        caller, agent = data_wav[:, 0], data_wav[:, 1]
 
-        features = extract_features_from_turns(data.get("turns", []))
+        features = extract_conversational_features(caller, agent, sample_rate)
         features["anon_id"] = row["anon_id"]
         features["label"] = row["label"]
         features["split"] = row["split"]
