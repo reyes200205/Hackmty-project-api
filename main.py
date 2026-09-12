@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 
@@ -6,6 +7,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 
 from call_agent.runner import run_call_script
+from call_agent.session import CallSession
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("media-stream")
@@ -37,6 +39,7 @@ async def media_stream(websocket: WebSocket):
     await websocket.accept()
     stream_sid = None
     script_task: asyncio.Task | None = None
+    session = CallSession()
 
     try:
         while True:
@@ -50,13 +53,17 @@ async def media_stream(websocket: WebSocket):
             elif event == "start":
                 stream_sid = data["start"]["streamSid"]
                 logger.info("Stream started: %s", stream_sid)
-                script_task = asyncio.create_task(run_call_script(websocket, stream_sid))
+                script_task = asyncio.create_task(run_call_script(websocket, stream_sid, session))
 
             elif event == "media":
-                pass  # el audio del caller se procesara en la fase de buffering/mux
+                ulaw_chunk = base64.b64decode(data["media"]["payload"])
+                session.ingest_caller_ulaw(ulaw_chunk)
 
             elif event == "stop":
                 logger.info("Stream stopped: %s", stream_sid)
+                logger.info("Buffers -> caller: %d bytes (%.1fs), agent: %d bytes (%.1fs)",
+                            len(session.caller_pcm), len(session.caller_pcm) / 16000,
+                            len(session.agent_pcm), len(session.agent_pcm) / 16000)
                 break
 
     except WebSocketDisconnect:
