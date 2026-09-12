@@ -9,6 +9,7 @@ import soundfile as sf
 from detector.features import feature_vector, spectral_flatness
 
 MODEL_PATH = Path(__file__).parent / "model" / "classifier.joblib"
+CALIBRATOR_PATH = Path(__file__).parent / "model" / "calibrator.joblib"
 
 
 def decode_stereo_wav(audio_b64: str) -> tuple[np.ndarray, np.ndarray, int]:
@@ -28,6 +29,15 @@ def _load_model():
         return None
     import joblib
     return joblib.load(MODEL_PATH)
+
+
+@functools.lru_cache(maxsize=1)
+def _load_calibrator():
+    if not CALIBRATOR_PATH.exists():
+        return None
+    import joblib
+    bundle = joblib.load(CALIBRATOR_PATH)
+    return bundle.get("calibrator")
 
 
 from .conversational import predict_conversational
@@ -63,5 +73,12 @@ def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tup
     acoustic_confidence = _acoustic_confidence(caller, sample_rate)
 
     confidence = ACOUSTIC_WEIGHT * acoustic_confidence + (1 - ACOUSTIC_WEIGHT) * conv_prob_synthetic
+
+    # A4: Calibración estadística con Isotonic Regression (minimiza Brier Score para desempate)
+    calibrator = _load_calibrator()
+    if calibrator is not None:
+        confidence = float(calibrator.predict([confidence])[0])
+        confidence = float(np.clip(confidence, 0.001, 0.999))
+
     is_synthetic = confidence >= 0.5
-    return is_synthetic, confidence
+    return is_synthetic, round(confidence, 4)
