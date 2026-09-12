@@ -104,17 +104,14 @@ def compute_mfcc(x: np.ndarray, sample_rate: int, n_mfcc: int = N_MFCC, n_mels: 
 
 
 def spectral_flatness(x: np.ndarray, frame: int = 1024, hop: int = 512) -> float:
-    if len(x) < frame:
+    frames = _frame_signal(x, sample_rate=1, frame_ms=frame * 1000.0, hop_ms=hop * 1000.0)
+    if frames.shape[0] == 0:
         return 0.0
     window = np.hanning(frame)
-    flatness_vals = []
-    for start in range(0, len(x) - frame, hop):
-        seg = x[start:start + frame] * window
-        mag = np.abs(np.fft.rfft(seg)) + 1e-10
-        gm = np.exp(np.mean(np.log(mag)))
-        am = np.mean(mag)
-        flatness_vals.append(gm / am)
-    return float(np.mean(flatness_vals)) if flatness_vals else 0.0
+    mag = np.abs(np.fft.rfft(frames * window, axis=1)) + 1e-10
+    gm = np.exp(np.mean(np.log(mag), axis=1))
+    am = np.mean(mag, axis=1)
+    return float(np.mean(gm / am))
 
 
 def _autocorr_pitch(frames: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
