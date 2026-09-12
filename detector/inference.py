@@ -28,13 +28,14 @@ def _spectral_flatness(x: np.ndarray, frame: int = 1024, hop: int = 512) -> floa
     return float(np.mean(flatness_vals)) if flatness_vals else 0.0
 
 
+from .conversational import predict_conversational
+
+
 def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tuple[bool, float]:
-    """Baseline A1: heuristica de planitud espectral del canal del caller.
-    TODO(A2): reemplazar por MFCC + jitter/shimmer + piso de ruido/silencio digital
-    + clasificador entrenado sobre el dataset. Esto solo garantiza una respuesta
-    evaluable desde el dia 1.
+    """Inferencia de la llamada:
+    - Fase A3: Señal conversacional basada en VAD cruzado de ambos canales (latencia de respuesta,
+      solapes, interrupciones y dinámica temporal).
+    - Fase A2 (Acústico): Alessandro sumará aquí sus features acústicos (MFCCs, piso de ruido).
     """
-    flatness = _spectral_flatness(caller)
-    confidence = float(np.clip(flatness * 4.0, 0.0, 1.0))
-    is_synthetic = confidence >= 0.5
+    is_synthetic, confidence, _ = predict_conversational(caller, agent, sample_rate)
     return is_synthetic, confidence
