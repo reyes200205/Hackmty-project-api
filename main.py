@@ -10,6 +10,7 @@ from fastapi.responses import Response
 
 from call_agent.runner import run_call_script
 from call_agent.session import CallSession
+from call_logs.store import finalize_call
 from customers.auth import verify_password
 from customers.deps import get_current_customer
 from customers.lookup import find_by_email, find_by_phone
@@ -132,10 +133,34 @@ async def media_stream(websocket: WebSocket):
                 logger.info("Buffers -> caller: %d bytes (%.1fs), agent: %d bytes (%.1fs)",
                             len(session.caller_pcm), len(session.caller_pcm) / 16000,
                             len(session.agent_pcm), len(session.agent_pcm) / 16000)
+                if session.call_sid:
+                    try:
+                        final_eval = session.evaluate_live_detection()
+                        await finalize_call(
+                            session.call_sid,
+                            is_synthetic=final_eval["is_synthetic"],
+                            confidence=final_eval["confidence"],
+                            reason=final_eval.get("reason", "llamada finalizada"),
+                            status="completed",
+                        )
+                    except Exception as e:
+                        logger.exception("Error al registrar fin de llamada en Mongo: %s", e)
                 break
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected: %s", stream_sid)
+        if session.call_sid:
+            try:
+                final_eval = session.evaluate_live_detection()
+                await finalize_call(
+                    session.call_sid,
+                    is_synthetic=final_eval["is_synthetic"],
+                    confidence=final_eval["confidence"],
+                    reason=final_eval.get("reason", "desconexión de websocket"),
+                    status="disconnected",
+                )
+            except Exception:
+                pass
     finally:
         if script_task and not script_task.done():
             script_task.cancel()

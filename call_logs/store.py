@@ -32,3 +32,56 @@ async def save_turn(call_sid: str, turn: dict) -> None:
         {"$push": {"turns": turn}},
         upsert=True,
     )
+
+
+async def update_call_verdict(
+    call_sid: str,
+    is_synthetic: bool,
+    confidence: float,
+    reason: str | None = None,
+    status: str = "in_progress",
+) -> None:
+    """Actualiza en tiempo real el veredicto consolidado de la llamada en Mongo."""
+    update_fields = {
+        "is_synthetic": is_synthetic,
+        "confidence": round(float(confidence), 4),
+        "status": status,
+        "last_verdict_at": datetime.now(timezone.utc),
+    }
+    if reason:
+        update_fields["verdict_reason"] = reason
+
+    await get_call_logs_collection().update_one(
+        {"call_sid": call_sid},
+        {"$set": update_fields},
+        upsert=True,
+    )
+
+
+async def finalize_call(
+    call_sid: str,
+    is_synthetic: bool,
+    confidence: float,
+    reason: str | None = None,
+    status: str = "completed",
+) -> None:
+    """Cierra la llamada registrando el veredicto final y fecha de terminación."""
+    # Preservar status de detección si ya fue marcado
+    existing = await get_call_logs_collection().find_one({"call_sid": call_sid}, {"status": 1})
+    if existing and existing.get("status") == "terminated_ai_detected":
+        status = "terminated_ai_detected"
+
+    await get_call_logs_collection().update_one(
+        {"call_sid": call_sid},
+        {
+            "$set": {
+                "is_synthetic": is_synthetic,
+                "confidence": round(float(confidence), 4),
+                "status": status,
+                "final_verdict_reason": reason,
+                "ended_at": datetime.now(timezone.utc),
+            }
+        },
+        upsert=True,
+    )
+
