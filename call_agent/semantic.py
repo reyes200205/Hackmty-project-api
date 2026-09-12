@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -6,6 +7,7 @@ import wave
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 load_dotenv()
@@ -14,6 +16,8 @@ logger = logging.getLogger("gemini-judge")
 
 MODEL = "gemini-3.6-flash"
 MIN_AUDIO_SECONDS = 0.3
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 1.5  # se multiplica por el numero de intento (1.5s, 3s)
 
 _client: genai.Client | None = None
 
@@ -60,17 +64,32 @@ async def judge_response(agent_text: str, caller_pcm: bytes, sample_rate: int = 
 
     wav_bytes = _pcm_to_wav_bytes(caller_pcm, sample_rate)
     client = _get_client()
+    contents = [
+        types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
+        JUDGE_PROMPT.format(agent_text=agent_text),
+    ]
 
-    try:
-        response = await client.aio.models.generate_content(
-            model=MODEL,
-            contents=[
-                types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
-                JUDGE_PROMPT.format(agent_text=agent_text),
-            ],
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        logger.error("Gemini fallo al juzgar la respuesta: %s", e)
-        return {"transcript": "", "sounds_human": None, "confidence": 0.0, "reasoning": f"error: {e}"}
+    last_error: Exception | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            return json.loads(response.text)
+        except genai_errors.ServerError as e:
+            # 503/500: sobrecarga temporal del lado de Google, vale la pena reintentar.
+            last_error = e
+            if attempt < MAX_ATTEMPTS:
+                wait = RETRY_BACKOFF_SECONDS * attempt
+                logger.warning("Gemini 5xx (intento %d/%d), reintentando en %.1fs: %s",
+                               attempt, MAX_ATTEMPTS, wait, e)
+                await asyncio.sleep(wait)
+        except Exception as e:
+            # Error no transitorio (4xx, JSON invalido, etc): no vale la pena reintentar.
+            last_error = e
+            break
+
+    logger.error("Gemini fallo al juzgar la respuesta tras %d intento(s): %s", MAX_ATTEMPTS, last_error)
+    return {"transcript": "", "sounds_human": None, "confidence": 0.0, "reasoning": f"error: {last_error}"}
