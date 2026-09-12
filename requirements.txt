@@ -6,6 +6,7 @@ numpy
 motor
 python-dotenv
 scipy
+pandas
 scikit-learn
-lightgbm
 joblib
+google-genai

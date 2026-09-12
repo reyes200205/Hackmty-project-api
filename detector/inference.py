@@ -28,7 +28,16 @@ def _load_model():
     return joblib.load(MODEL_PATH)
 
 
+from .conversational import predict_conversational
+
+
 def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tuple[bool, float]:
+    """Inferencia de la llamada:
+    - Fase A3: Señal conversacional basada en VAD cruzado de ambos canales (latencia de respuesta,
+      solapes, interrupciones y dinámica temporal).
+    - Fase A2 (Acústico): Alessandro sumará aquí sus features acústicos (MFCCs, piso de ruido).
+    """
+    is_synthetic, confidence, _ = predict_conversational(caller, agent, sample_rate)
     """A2: MFCC + pitch/jitter/shimmer + piso de ruido/silencio digital -> clasificador entrenado.
     Si detector/model/classifier.joblib no existe todavia (falta correr detector/train.py),
     cae de vuelta a la heuristica de planitud espectral de A1 para no romper el endpoint.

@@ -73,6 +73,7 @@ async def media_stream(websocket: WebSocket):
 
             elif event == "start":
                 stream_sid = data["start"]["streamSid"]
+                session.call_sid = data["start"].get("callSid")
                 custom_params = data["start"].get("customParameters", {})
                 session.customer_name = custom_params.get("customerName") or None
                 logger.info("Stream started: %s (cliente: %s)", stream_sid, session.customer_name or "desconocido")
