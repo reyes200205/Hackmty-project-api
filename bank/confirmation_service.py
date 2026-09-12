@@ -41,11 +41,16 @@ class TransferConfirmationService:
 
     def build_confirmation_twiml(self, transfer: dict) -> str:
         """Pide la frase y GRABA la respuesta (no solo la transcribe) para
-        poder analizar despues si la voz suena sintetica."""
+        poder analizar despues si la voz suena sintetica.
+
+        Importante: NUNCA se dice la frase de confirmacion en la llamada --
+        eso la volveria inutil como segundo factor (cualquiera que solo
+        conteste el telefono podria repetirla al vuelo). La frase solo se
+        muestra en la app; aqui solo se le pide que la diga."""
         vr = VoiceResponse()
         vr.say(
             f"Para confirmar la transferencia de {transfer['amount']:.2f} pesos a {transfer['beneficiary_name']}, "
-            f"diga: {transfer['confirmation_phrase']}.",
+            "diga la frase de confirmacion que aparece en su aplicacion.",
             language="es-MX",
         )
         vr.record(

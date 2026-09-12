@@ -13,12 +13,22 @@ logger = logging.getLogger("bank")
 
 TRANSCRIBE_MODEL = "whisper-large-v3-turbo"
 
-# Calibrado con muestras reales (12-sep-2026): 1 TTS limpio (pitch_std~40Hz,
-# jitter~0.02) vs 10 grabaciones de voz humana real por telefono (pitch_std
-# 50-94Hz, jitter 0.03-0.27). Es un heuristico con pocos datos de calibracion,
-# no un clasificador entrenado -- puede necesitar ajuste con mas muestras.
+# Calibrado con muestras reales (12-sep-2026): TTS de Windows (SAPI) y de
+# Google (gTTS, bajado a 8kHz simulando telefono) vs 10 grabaciones de voz
+# humana real por telefono.
+#               pitch_std(Hz)  jitter   shimmer
+#  SAPI TTS         40.0       0.0205   0.1672
+#  Google TTS       43.2       0.0146   0.1140
+#  Humanos (rango)  50.0-93.6  0.032-0.27  0.137-0.226
+# Ninguna señal sola separa perfectamente los dos TTS de los 10 humanos con
+# margen comodo, pero las 3 combinadas si: se cuenta cuantas de las 3 caen en
+# el lado "sospechoso" y se marca sintetico con mayoria (2 de 3). Esto le da
+# margen si el ruido de una grabacion real (ej. reproducir el TTS por bocina
+# hacia otro telefono) "humaniza" una sola señal por ruido de fondo.
 PITCH_STD_THRESHOLD_HZ = 45.0
 JITTER_THRESHOLD = 0.025
+SHIMMER_THRESHOLD = 0.13
+MIN_SUSPICIOUS_VOTES = 2
 
 _clients: list[AsyncGroq] | None = None
 _next_idx = 0
@@ -74,14 +84,17 @@ async def transcribe_wav(wav_bytes: bytes) -> str:
 
 def check_voice_authenticity(wav_bytes: bytes) -> tuple[bool, float, str]:
     """Heuristica DETERMINISTICA basada en features acusticas crudas (pitch_std,
-    jitter) calculadas directo de la señal con detector.features (funciones
-    puras de procesamiento de señal de Alessandro/Gera, NO su modelo entrenado
-    -- ese esta calibrado para llamadas largas del dataset del reto y no
-    generaliza a clips cortos de una sola frase, daba siempre ~0.01).
+    jitter, shimmer) calculadas directo de la señal con detector.features
+    (funciones puras de procesamiento de señal de Alessandro/Gera, NO su
+    modelo entrenado -- ese esta calibrado para llamadas largas del dataset
+    del reto y no generaliza a clips cortos de una sola frase, daba siempre
+    ~0.01 sin importar el audio).
 
-    Tambien se probo un juicio de Groq con metadatos de Whisper, pero esos
-    metadatos salen identicos (varianza 0) para cualquier clip corto de un
-    solo segmento, sin importar quien hable -- por eso se descarto."""
+    Limitacion conocida: es un heuristico con pocas muestras de calibracion
+    (2 TTS, 10 humanos), no un clasificador entrenado. TTS neuronal de muy
+    alta calidad, o reproducido con ruido de fondo real, puede seguir
+    pasando. La seguridad real de la confirmacion depende principalmente de
+    que la frase dinamica no se diga en la llamada (solo en la app)."""
     from detector.features import extract_features
 
     data, sample_rate = sf.read(io.BytesIO(wav_bytes), dtype="float32", always_2d=True)
@@ -90,14 +103,19 @@ def check_voice_authenticity(wav_bytes: bytes) -> tuple[bool, float, str]:
 
     pitch_std = feats["pitch_std"]
     jitter = feats["jitter"]
+    shimmer = feats["shimmer"]
 
-    suspicious_pitch = pitch_std < PITCH_STD_THRESHOLD_HZ
-    suspicious_jitter = jitter < JITTER_THRESHOLD
-    is_synthetic = suspicious_pitch and suspicious_jitter
+    votes = {
+        "pitch_std": pitch_std < PITCH_STD_THRESHOLD_HZ,
+        "jitter": jitter < JITTER_THRESHOLD,
+        "shimmer": shimmer < SHIMMER_THRESHOLD,
+    }
+    suspicious_count = sum(votes.values())
+    is_synthetic = suspicious_count >= MIN_SUSPICIOUS_VOTES
 
-    confidence = 0.55 + 0.2 * (suspicious_pitch + suspicious_jitter) if is_synthetic else 0.3
+    confidence = 0.5 + 0.15 * suspicious_count if is_synthetic else max(0.2, 0.5 - 0.1 * suspicious_count)
     reasoning = (
-        f"pitch_std={pitch_std:.1f}Hz (umbral {PITCH_STD_THRESHOLD_HZ}), "
-        f"jitter={jitter:.4f} (umbral {JITTER_THRESHOLD})"
+        f"pitch_std={pitch_std:.1f}Hz, jitter={jitter:.4f}, shimmer={shimmer:.4f} "
+        f"-> {suspicious_count}/3 señales sospechosas ({', '.join(k for k, v in votes.items() if v) or 'ninguna'})"
     )
     return is_synthetic, round(confidence, 2), reasoning
