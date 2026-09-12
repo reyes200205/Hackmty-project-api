@@ -10,7 +10,7 @@ from .phone import normalize_phone
 
 DEMO_CUSTOMERS = [
     {
-        "full_name": "Jorge Alejandro Renteria Reyes",
+        "full_name": "Viviana Renteria Reyes",
         "email": "jorgerenteriareyes4@gmail.com",
         "password": "demo1234",
         "phone_number": "+528714613171",

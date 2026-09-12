@@ -6,7 +6,10 @@ import time
 
 from fastapi import WebSocket
 
+from call_logs.store import save_turn, start_call
+
 from .script import CALL_SCRIPT
+from .semantic import judge_response
 from .session import VOICE_RMS_THRESHOLD, CallSession
 from .tts import get_phrase_ulaw
 
@@ -55,23 +58,59 @@ async def _listen(session: CallSession, max_seconds: float) -> None:
                 max_seconds, session.peak_rms, VOICE_RMS_THRESHOLD)
 
 
+async def _analyze_and_log(call_sid: str, step_index: int, agent_text: str,
+                            caller_segment: bytes, peak_rms: int) -> None:
+    """Manda el segmento del caller a Gemini y guarda el veredicto en Mongo.
+    Corre en background: no debe frenar la conversacion en vivo."""
+    try:
+        result = await judge_response(agent_text, caller_segment)
+        await save_turn(call_sid, {
+            "step_index": step_index,
+            "agent_text": agent_text,
+            "peak_rms": peak_rms,
+            **result,
+        })
+        logger.info("Gemini -> turno %d: sounds_human=%s confianza=%s transcript=%r",
+                    step_index, result.get("sounds_human"), result.get("confidence"), result.get("transcript"))
+    except Exception:
+        logger.exception("Fallo el analisis/guardado del turno %d", step_index)
+
+
 async def run_call_script(websocket: WebSocket, stream_sid: str, session: CallSession) -> None:
     """Recorre el guion de trampas hablando por el WebSocket de Twilio."""
+    if session.call_sid:
+        await start_call(session.call_sid, stream_sid, session.customer_name)
+
     try:
         name_part = f", {session.customer_name}" if session.customer_name else ""
+        last_agent_text = ""
+        step_index = 0
+
         for step in CALL_SCRIPT:
+            step_index += 1
+
             if step["type"] == "speak":
                 text = step["text"].format(name_part=name_part)
+                last_agent_text = text
                 logger.info("Agente dice: %s", text)
                 ulaw = get_phrase_ulaw(text)
                 await _send_ulaw(websocket, stream_sid, session, ulaw)
+
             elif step["type"] == "listen":
                 logger.info("Agente escuchando (max %.1fs)", step["seconds"])
+                segment_start = len(session.caller_pcm)
                 await _listen(session, step["seconds"])
+                caller_segment = bytes(session.caller_pcm[segment_start:])
+                if session.call_sid:
+                    asyncio.create_task(_analyze_and_log(
+                        session.call_sid, step_index, last_agent_text, caller_segment, session.peak_rms,
+                    ))
+
             elif step["type"] == "silence":
                 # Trampa deliberada: silencio fijo, no reacciona a lo que haga el caller.
                 logger.info("Agente en silencio deliberado por %.1fs", step["seconds"])
                 await asyncio.sleep(step["seconds"])
+
         logger.info("Guion terminado: %s", stream_sid)
     except asyncio.CancelledError:
         logger.info("Guion cancelado (llamada terminada): %s", stream_sid)
