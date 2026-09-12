@@ -17,3 +17,7 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+
+# Temporary response and test files
+transfer_resp.json
+*.log
