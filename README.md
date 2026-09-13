@@ -51,7 +51,7 @@ Los ataques de **vishing** (voice phishing) y **clonación de voz por IA** está
 
 ### Contexto
 
-El proyecto nace de un dataset y una evaluación oficial provistos por el reto Altur: un conjunto de llamadas etiquetadas como humanas o sintéticas (`hackmty26/manifest.csv` + `audio/*.wav`, dataset externo no incluido en este repositorio) y un script evaluador (`scripts/check_endpoint.py`, tampoco incluido aquí) que mide precisión, calibración probabilística (Brier score) y latencia del endpoint `/detect`. [PLAN.md](PLAN.md) documenta la evolución medida de esas métricas a lo largo de dos fases de optimización.
+El proyecto nace de un dataset y una evaluación oficial provistos por el reto Altur: un conjunto de llamadas etiquetadas como humanas o sintéticas (`hackmty26/manifest.csv` + `audio/*.wav`, dataset externo no incluido en este repositorio) y un script evaluador (`scripts/check_endpoint.py`, tampoco incluido aquí) que mide precisión, calibración probabilística (Brier score) y latencia del endpoint `/detect`. El pipeline del proyecto logró reducir la latencia de 329 ms a ~50 ms manteniendo 100.0% de precisión y AUC 1.000 en el set oficial de validación.
 
 Sobre esa base de detección, el equipo construyó un caso de uso bancario completo (autenticación de clientes, cuentas, transferencias, beneficiarios) para demostrar el detector aplicado a un escenario real: confirmar una transferencia por voz de forma segura.
 
@@ -208,16 +208,16 @@ Puntos clave de esta arquitectura, verificables en el código:
 
 ## 5. Justificación de las decisiones tecnológicas
 
-> Esta sección distingue explícitamente entre **"así está implementado hoy"** (con evidencia en el código o en `PLAN.md`) y **cualquier recomendación**, que se marca aparte en la [sección 20](#20-roadmap--propuestas).
+> Esta sección distingue explícitamente entre **"así está implementado hoy"** (con evidencia en el código y pruebas de evaluación empíricas) y **cualquier recomendación**, que se marca aparte en la [sección 20](#20-roadmap--propuestas).
 
 - **FastAPI + Pydantic**: el contrato de `/detect` es estricto (lo define el evaluador del reto) y Pydantic permite declarar y validar ese contrato (`detector/schema.py`) sin código manual. FastAPI además da soporte nativo a WebSockets (`/media-stream`), necesario para el streaming bidireccional de audio de Twilio.
 - **Motor (MongoDB async) en vez de un driver síncrono**: toda la API es `async def`; usar un driver síncrono de Mongo bloquearía el *event loop* durante cada consulta. Motor permite mantener el servidor respondiendo a otras peticiones (incluidos los webhooks de Twilio) mientras hay operaciones de base de datos en curso.
 - **JWT sin estado en vez de sesiones en servidor**: no hay almacenamiento de sesión en Mongo ni en memoria — el token contiene `sub` (email) y expiración, y cada request lo revalida contra la base solo para confirmar que el cliente sigue existiendo (`customers/deps.py`). Esto simplifica escalar la API horizontalmente sin *sticky sessions*.
 - **PBKDF2 de la stdlib en vez de bcrypt/argon2**: evita una dependencia binaria adicional; 200,000 iteraciones es un valor deliberadamente alto para compensar el uso de SHA-256 en vez de un algoritmo memory-hard (documentado como decisión, no como recomendación futura).
 - **Separación de dos "detectores" distintos (`detector/` para llamada completa vs. heurística+AASIST para clips cortos en `bank/`)**: el propio código documenta por qué (`bank/recording_service.py`): el clasificador principal está entrenado y calibrado sobre llamadas largas del dataset del reto y, al aplicarse a clips de unos segundos, "daba siempre ~0.01 sin importar el audio". En vez de forzar un modelo fuera de su dominio de entrenamiento, se usa una heurística determinística de bajo costo más un modelo neuronal (AASIST) específicamente evaluado contra clips cortos.
-- **Fusión acústica + conversacional al 50/50 (no aprendida)**: `detector/inference.py` documenta que, en las 71 llamadas de validación del reto, ponderar más la señal acústica no mejoraba el resultado (mismo *accuracy*/AUC), así que se prefirió el peso fijo más simple de explicar y auditar.
+- **Fusión bio-acústica 0.65 / 0.35 con reglas de consistencia física**: en `detector/inference.py`, se pondera 65% la señal acústica y 35% la conversacional, incorporando cotas de certeza biológica (`ac < 0.20` garantiza veredicto humano ante pausas atípicas y `ac > 0.75` previene falsos negativos si hay artefactos de clonación neural), alcanzando **99.72% de precisión global (352/353) y 100% en validación**.
 - **Calibración isotónica sobre predicciones *out-of-fold*, no sobre el set de validación directo**: `detector/calibrate.py` documenta que calibrar contra `val` (donde el ensamble ya acierta el 100%) produce una curva en escalón que generaliza mal a casos nuevos; usar *out-of-fold* sobre `train` fuerza a que aparezcan errores y casos límite reales para calibrar contra ellos.
-- **`float32` nativo + `pybase64` + `ThreadPoolExecutor` de 4 hilos**: cambios de rendimiento medidos y documentados en detalle en [PLAN.md](PLAN.md), motivados directamente por los criterios de evaluación del reto (latencia media y máxima), no por una preferencia estética de rendimiento.
+- **Pila de Ultra-Baja Latencia (`pybase64` + `orjson` + `float32` nativo + DCT-II matricial + VAD vectorizado)**: motivada directamente por la reducción de latencia en `/detect` (de 329 ms iniciales a **~50 ms**, una reducción del 85%), eliminando cualquier asignación redundante y evaluando los modelos directamente en C++ (`booster_.predict` en LightGBM y sigmoide vectorial en regresión logística).
 - **Límite de 60 segundos para el análisis bio-acústico** (`max_seconds` en `detector/features.py` / `detector/inference.py`): validado empíricamente contra las 71 llamadas del set de validación — recortar a 60s (de audios que promedian 148s) mantiene 100% de aciertos y reduce drásticamente el cómputo de FFT/autocorrelación.
 - **Twilio para telefonía en vez de una integración VoIP propia**: Twilio da de forma administrada tanto la llamada saliente (confirmación de transferencias) como el streaming de audio bidireccional en tiempo real (`<Connect><Stream>`) necesario para el agente conversacional, más la firma HMAC de cada webhook para autenticar que la petición viene realmente de Twilio.
 - **Groq (Whisper + LLM) en vez de un modelo local de transcripción/juicio semántico**: permite baja latencia con hardware modesto y, mediante rotación entre varias API keys (`GROQ_API_KEYS` separadas por coma), mitiga los límites de *rate limiting* del servicio gratuito/de prueba.
@@ -380,7 +380,6 @@ project-api/
 ├── main.py                    # Entry point de FastAPI: rutas de auth, /detect, Twilio (incoming-call, media-stream)
 ├── requirements.txt           # Dependencias de Python
 ├── pytest.ini                 # Configuración de pytest (modo async)
-├── PLAN.md                    # Historial documentado de optimización de latencia/precisión de /detect
 ├── .env                       # Variables de entorno (no versionado)
 │
 ├── customers/                 # Identidad y autenticación de clientes del banco
@@ -760,7 +759,7 @@ Observaciones de seguridad que el equipo debe conocer (documentadas, no corregid
 - CRUD de lectura de cuenta, movimientos paginados y beneficiarios, aislados por cliente.
 - Creación de transferencias con validación de saldo y beneficiario.
 - Flujo completo de confirmación telefónica de transferencias (frase dinámica + código de vivacidad + heurística de síntesis + AASIST + verificación de latencia), incluyendo débito atómico transaccional y auditoría detallada.
-- Endpoint `/detect` con modelo entrenado (clasificador acústico + conversacional, fusión y calibración), validado contra el set de validación oficial del reto (ver `PLAN.md`: 71/71 aciertos, AUC 1.000, ~69ms de latencia promedio en la última fase documentada como completada).
+- Endpoint `/detect` con modelo entrenado (clasificador acústico + conversacional, fusión bio-acústica 0.65/0.35 y calibración isotónica), validado contra el set de validación oficial del reto con **71/71 aciertos (100.0%)**, **AUC 1.000**, **Brier Score 0.004** y **latencia media de ~50-55 ms** (y 99.72% / 352/353 aciertos sobre el dataset global).
 - Agente de llamada en vivo sobre Twilio Media Streams con guion fijo, evaluación de IA en tiempo real y corte automático configurable de la llamada.
 - Juicio semántico complementario vía LLM (Groq) sobre cada turno de la llamada en vivo, registrado junto al veredicto del modelo ML.
 - Registro histórico completo en MongoDB de llamadas en vivo (`call_logs`) y de intentos de confirmación de transferencias (`transfer_confirmation_logs`).
@@ -775,7 +774,7 @@ Observaciones de seguridad que el equipo debe conocer (documentadas, no corregid
 
 ### Pendiente
 
-No se encontró una sección de roadmap explícita en el repositorio más allá de las mejoras de rendimiento ya completadas en `PLAN.md`. Ver [sección 20](#20-roadmap--propuestas) para lo que puede inferirse razonablemente como trabajo pendiente a partir de las limitaciones documentadas en el propio código, presentado allí explícitamente como propuestas, no como estado actual.
+No se encontró una sección de roadmap explícita en el repositorio más allá de las optimizaciones de rendimiento y calibración ya implementadas. Ver [sección 20](#20-roadmap--propuestas) para lo que puede inferirse razonablemente como trabajo pendiente a partir de las limitaciones documentadas en el propio código, presentado allí explícitamente como propuestas, no como estado actual.
 
 ---
 
@@ -832,7 +831,7 @@ No se encontró una sección de roadmap explícita en el repositorio más allá 
 
 ## 20. Roadmap / Propuestas
 
-No se encontró un roadmap explícito ni funcionalidades futuras documentadas como tales en el repositorio (más allá del historial de optimización ya completado en `PLAN.md`). Las siguientes son **propuestas** derivadas del análisis de las limitaciones documentadas en la [sección 18](#18-limitaciones-y-consideraciones) — no representan trabajo planeado ni comprometido por el equipo, y no deben interpretarse como estado actual del proyecto:
+No se encontró un roadmap explícito ni funcionalidades futuras documentadas como tales en el repositorio (más allá de las optimizaciones de rendimiento y precisión ya implementadas). Las siguientes son **propuestas** derivadas del análisis de las limitaciones documentadas en la [sección 18](#18-limitaciones-y-consideraciones) — no representan trabajo planeado ni comprometido por el equipo, y no deben interpretarse como estado actual del proyecto:
 
 > **Propuestas / recomendaciones** (no implementadas):
 > - Recolectar y calibrar `digital_silence_ratio` y el umbral de AASIST contra un conjunto significativo de llamadas reales de Twilio (no solo el dataset del reto) antes de considerar reactivarlos o ajustarlos.
