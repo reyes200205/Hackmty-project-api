@@ -178,12 +178,15 @@ def test_check_voice_authenticity_silence_vs_synthetic():
     assert "sin habla" in reason
 
     # 2. Voz sintética (bajo pitch_std, bajo jitter, bajo shimmer)
+    # Umbrales calibrados con muestras reales (SAPI TTS y Google gTTS
+    # inyectado directo, ver comentario en bank/recording_service.py):
+    # pitch_std < 45.0, jitter < 0.025, shimmer < 0.13
     with patch("detector.features.extract_features", return_value={
         "voiced_fraction": 0.8,
         "pitch_mean": 180.0,
-        "pitch_std": 38.0,   # < 55.0
-        "jitter": 0.032,     # < 0.055
-        "shimmer": 0.19,     # < 0.24
+        "pitch_std": 40.0,   # < 45.0
+        "jitter": 0.015,     # < 0.025
+        "shimmer": 0.11,     # < 0.13
     }):
         is_synth, conf, reason = check_voice_authenticity(buf_silence.getvalue())
         assert is_synth is True
@@ -194,9 +197,9 @@ def test_check_voice_authenticity_silence_vs_synthetic():
     with patch("detector.features.extract_features", return_value={
         "voiced_fraction": 0.8,
         "pitch_mean": 210.0,
-        "pitch_std": 85.0,   # > 55.0
-        "jitter": 0.150,     # > 0.055
-        "shimmer": 0.38,     # > 0.24
+        "pitch_std": 85.0,   # > 45.0
+        "jitter": 0.150,     # > 0.025
+        "shimmer": 0.38,     # > 0.13
     }):
         is_synth, conf, reason = check_voice_authenticity(buf_silence.getvalue())
         assert is_synth is False

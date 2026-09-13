@@ -13,14 +13,28 @@ logger = logging.getLogger("bank")
 
 TRANSCRIBE_MODEL = "whisper-large-v3-turbo"
 
-# Calibrado para separar voces sintéticas/TTS (incluso reproducidas por altavoz/laptop)
-# de voces humanas reales por teléfono:
-#               pitch_std(Hz)  jitter       shimmer
-#  TTS / Bocina     < 55.0     < 0.055      < 0.24
-#  Humanos         50.0-110.0  0.080-0.27   0.280-0.50
-PITCH_STD_THRESHOLD_HZ = 55.0
-JITTER_THRESHOLD = 0.055
-SHIMMER_THRESHOLD = 0.24
+# Calibrado con muestras reales (12-sep-2026): TTS de Windows (SAPI) y de
+# Google (gTTS) INYECTADO DIGITAL DIRECTO (sin pasar por bocina/microfono) vs
+# 10 grabaciones de voz humana real por telefono.
+#               pitch_std(Hz)  jitter   shimmer
+#  SAPI TTS         40.0       0.0205   0.1672
+#  Google TTS       43.2       0.0146   0.1140
+#  Humanos (rango)  50.0-93.6  0.032-0.27  0.137-0.226
+#
+# LIMITE CONOCIDO (confirmado empiricamente el 13-sep-2026): si el TTS se
+# reproduce por una bocina hacia el microfono del telefono en vez de
+# inyectarse directo, el ruido de esa reproduccion fisica ("replay attack" en
+# la literatura de anti-spoofing) empuja pitch_std/jitter/shimmer al MISMO
+# rango que voces humanas reales (se probo con Google Translate: pitch_std
+# 66-91Hz, jitter 0.09-0.23, shimmer 0.20-0.22 -- indistinguible de humano
+# con estas 3 features). NINGUN umbral de estas 3 señales resuelve esto; hay
+# que subir umbrales con cuidado de no volver a generar falsos positivos
+# contra voz humana real (ya paso una vez: umbrales sueltos = ~80% de los
+# humanos marcados como falsos positivos). La seguridad real contra este
+# escenario depende de que la frase dinamica nunca se diga en la llamada.
+PITCH_STD_THRESHOLD_HZ = 45.0
+JITTER_THRESHOLD = 0.025
+SHIMMER_THRESHOLD = 0.13
 MIN_SUSPICIOUS_VOTES = 2
 
 _clients: list[AsyncGroq] | None = None
