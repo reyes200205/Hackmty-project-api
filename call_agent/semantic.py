@@ -20,17 +20,28 @@ _clients: list[AsyncGroq] | None = None
 _next_idx = 0
 _rotation_lock = asyncio.Lock()
 
-JUDGE_PROMPT = """Eres un analista de fraude de un banco mexicano. El agente del banco acaba \
-de decir lo siguiente durante una llamada telefonica:
+JUDGE_PROMPT = """Analiza objetivamente una respuesta transcrita de una llamada telefonica de un \
+banco mexicano, sin asumir de antemano que se trata de fraude. El agente del banco dijo:
 
 "{agent_text}"
 
-El cliente respondio (transcrito): "{transcript}"
+El cliente respondio (transcrito por un sistema de reconocimiento de voz): "{transcript}"
 
-Evalua si esa respuesta suena como la de una persona real (dudas, muletillas, lenguaje natural, \
-"no se", "no tengo eso") o como generada por una inteligencia artificial (demasiado estructurada, \
-inventa informacion cuando se le pregunta por algo que no existe, o reacciona de forma extraña a \
-interrupciones/silencios).
+Importante sobre la transcripcion: el reconocimiento de voz limpia y normaliza el texto -- \
+elimina muletillas, dudas ("eh", "este", "mmm") y repeticiones aunque la persona real las haya \
+dicho. NO uses "la respuesta suena demasiado limpia/estructurada" como evidencia de IA: eso es \
+un artefacto de la transcripcion, no una señal real, y penalizarlo sesga el resultado en contra \
+de personas reales que simplemente hablan claro.
+
+Evalua usando solo evidencia robusta que sobrevive a la transcripcion:
+- ¿Inventa informacion especifica y detallada cuando se le pregunta por algo que no existe o no \
+deberia saber, en vez de decir que no sabe o no tiene esa informacion?
+- ¿Ignora por completo la pregunta o responde algo sin relacion (non-sequitur)?
+- ¿Repite exactamente la misma frase que ya dijo antes en la conversacion, palabra por palabra?
+
+Si la respuesta es corta, generica (ej. "si", "gracias", "no se") o simplemente no da suficiente \
+informacion para decidir con evidencia real, es INCORRECTO adivinar con confianza alta. En ese \
+caso responde sounds_human=true con confidence baja (0.5 o menos) -- ante la duda, no acuses.
 
 Responde SOLO en JSON con este formato exacto:
 {{"sounds_human": true, "confidence": 0.0, "reasoning": "..."}}
@@ -113,6 +124,7 @@ async def judge_response(agent_text: str, caller_pcm: bytes, sample_rate: int = 
                     "content": JUDGE_PROMPT.format(agent_text=agent_text, transcript=transcript),
                 }],
                 response_format={"type": "json_object"},
+                temperature=0,
             )
 
         completion = await _call_with_rotation(_judge)

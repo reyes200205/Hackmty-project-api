@@ -37,6 +37,27 @@ JITTER_THRESHOLD = 0.025
 SHIMMER_THRESHOLD = 0.13
 MIN_SUSPICIOUS_VOTES = 2
 
+# Fix (13-sep-2026): agrega dos señales que NO dependen de pitch/jitter/shimmer,
+# para no repetir el error de subir esos 3 umbrales (ya penalizado con 80% de
+# falsos positivos contra humanos reales, ver nota de arriba).
+#
+# 1) digital_silence_ratio: un TTS inyectado DIRECTO (sin pasar por bocina/mic)
+#    deja huecos de silencio exactamente en 0.0 entre palabras -- un telefono
+#    real, aunque este en silencio, siempre trae ruido termico de fondo.
+#    Medido: TTS directo ~0.21 (21% de las muestras en cero exacto) vs llamadas
+#    humanas reales completas del dataset del reto, siempre <0.001. Margen de
+#    ~200x, sin riesgo real de falso positivo. Esto SI se pierde si el ataque
+#    pasa por bocina+microfono (el ruido de esa regrabacion tapa los ceros),
+#    por eso es un voto aparte, no un reemplazo de la señal 2.
+#
+# 2) tiempo antes de la primera palabra (check_response_latency): el dueño real
+#    ya trae la frase en pantalla de su app y la lee casi de inmediato. Alguien
+#    copiandola a un traductor y reproduciendola necesita varios segundos extra
+#    para prepararla -- una demora que la calidad del audio replayed no puede
+#    disimular, porque no es una señal acustica, es de tiempo.
+DIGITAL_SILENCE_RATIO_THRESHOLD = 0.02
+MAX_SILENCE_BEFORE_SPEECH_S = 5.0
+
 _clients: list[AsyncGroq] | None = None
 _next_idx = 0
 
@@ -114,6 +135,7 @@ def check_voice_authenticity(wav_bytes: bytes) -> tuple[bool, float, str]:
     pitch_std = feats["pitch_std"]
     jitter = feats["jitter"]
     shimmer = feats["shimmer"]
+    digital_silence_ratio = feats["digital_silence_ratio"]
 
     votes = {
         "pitch_std": pitch_std < PITCH_STD_THRESHOLD_HZ,
@@ -121,11 +143,45 @@ def check_voice_authenticity(wav_bytes: bytes) -> tuple[bool, float, str]:
         "shimmer": shimmer < SHIMMER_THRESHOLD,
     }
     suspicious_count = sum(votes.values())
-    is_synthetic = suspicious_count >= MIN_SUSPICIOUS_VOTES
+    digital_silence_flag = digital_silence_ratio > DIGITAL_SILENCE_RATIO_THRESHOLD
+
+    # digital_silence_flag es un voto aparte, no uno mas de los 3: por si solo
+    # ya es evidencia suficiente de inyeccion digital directa (ver nota arriba).
+    is_synthetic = suspicious_count >= MIN_SUSPICIOUS_VOTES or digital_silence_flag
 
     confidence = 0.5 + 0.15 * suspicious_count if is_synthetic else max(0.2, 0.5 - 0.1 * suspicious_count)
+    if digital_silence_flag:
+        confidence = max(confidence, 0.9)
+
     reasoning = (
         f"pitch_std={pitch_std:.1f}Hz, jitter={jitter:.4f}, shimmer={shimmer:.4f} "
-        f"-> {suspicious_count}/3 señales sospechosas ({', '.join(k for k, v in votes.items() if v) or 'ninguna'})"
+        f"-> {suspicious_count}/3 señales sospechosas ({', '.join(k for k, v in votes.items() if v) or 'ninguna'}); "
+        f"digital_silence_ratio={digital_silence_ratio:.4f} "
+        f"({'SOSPECHOSO, inyeccion directa probable' if digital_silence_flag else 'normal'})"
     )
     return is_synthetic, round(confidence, 2), reasoning
+
+
+def check_response_latency(wav_bytes: bytes) -> tuple[bool, float]:
+    """True si el silencio antes de la primera palabra es sospechosamente largo.
+
+    El dueño real de la cuenta ya trae la frase de confirmacion en pantalla y
+    la lee casi de inmediato despues del beep. Alguien copiando la frase a un
+    traductor y reproduciendola por otra bocina necesita varios segundos extra
+    para prepararla -- una demora que la calidad del audio no puede disimular
+    porque no es una señal acustica del audio en si, es de tiempo.
+
+    Limitacion conocida: umbral elegido por razonamiento (attacker necesita
+    copiar+pegar+generar+reproducir), no calibrado contra grabaciones reales
+    del ataque -- no existen muestras etiquetadas de esto para validarlo."""
+    from detector.conversational import compute_vad_intervals
+
+    data, sample_rate = sf.read(io.BytesIO(wav_bytes), dtype="float32", always_2d=True)
+    caller = data[:, 0]
+    intervals = compute_vad_intervals(caller, sample_rate)
+
+    if not intervals:
+        return True, 999.0
+
+    time_to_first_speech = intervals[0][0]
+    return time_to_first_speech > MAX_SILENCE_BEFORE_SPEECH_S, time_to_first_speech
