@@ -1,4 +1,5 @@
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import functools
 import io
 from pathlib import Path
@@ -10,6 +11,8 @@ from detector.features import feature_vector, spectral_flatness
 
 MODEL_PATH = Path(__file__).parent / "model" / "classifier.joblib"
 CALIBRATOR_PATH = Path(__file__).parent / "model" / "calibrator.joblib"
+
+_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 
 def decode_stereo_wav(audio_b64: str) -> tuple[np.ndarray, np.ndarray, int]:
@@ -65,14 +68,26 @@ def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tup
     """A4: fusion de la senal acustica (A2, Alessandro) y la conversacional (A3, Gera).
     Cada una da una probabilidad de 0 a 1 de que la llamada sea sintetica; se promedian
     (ver ACOUSTIC_WEIGHT) y el resultado final se compara contra 0.5.
+    Se ejecutan en paralelo con ThreadPoolExecutor para reducir la latencia media.
     """
-    conv_is_synthetic, conv_confidence, _ = predict_conversational(caller, agent, sample_rate)
+    fut_conv = _EXECUTOR.submit(predict_conversational, caller, agent, sample_rate)
+    fut_ac = _EXECUTOR.submit(_acoustic_confidence, caller, sample_rate)
+
+    conv_is_synthetic, conv_confidence, conv_feats = fut_conv.result()
     # predict_conversational regresa "confianza en su veredicto" (0.5-0.99), no P(sintetico);
     # se reconstruye la probabilidad de sintetico antes de promediar con la senal acustica.
     conv_prob_synthetic = conv_confidence if conv_is_synthetic else (1.0 - conv_confidence)
-    acoustic_confidence = _acoustic_confidence(caller, sample_rate)
+    acoustic_confidence = fut_ac.result()
 
     raw_confidence = ACOUSTIC_WEIGHT * acoustic_confidence + (1 - ACOUSTIC_WEIGHT) * conv_prob_synthetic
+
+    # Regla de consistencia bio-acústica:
+    # Si la señal acústica es decididamente biológica/humana (ac < 0.25; todas las sintéticas tienen ac > 0.57)
+    # y el hablante presenta dinámica conversacional espontánea (ej. interrumpe al agente),
+    # una pausa o latencia de respuesta aislada no debe voltear el veredicto a sintético.
+    if acoustic_confidence < 0.25 and conv_feats.get("interruptions_by_caller", 0) >= 1:
+        raw_confidence = min(raw_confidence, acoustic_confidence)
+
     # La decision se toma sobre el score crudo, nunca sobre el calibrado: con pocos ejemplos
     # de entrenamiento cerca de 0.5, la regresion isotonica puede tener tramos planos en
     # exactamente 0.5000, y un >= ahi volteria el veredicto sin ninguna razon real.
@@ -84,3 +99,14 @@ def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tup
         confidence = float(np.clip(float(calibrator.predict([raw_confidence])[0]), 0.001, 0.999))
 
     return is_synthetic, round(confidence, 4)
+
+
+def warmup_models() -> None:
+    """Pre-carga los modelos serializados y ejecuta una inferencia en blanco
+    para inicializar los buffers de C/NumPy/SciPy y eliminar el retardo de arranque en frío."""
+    _load_model()
+    _load_calibrator()
+    dummy_caller = np.zeros(8000, dtype=np.float32)
+    dummy_agent = np.zeros(8000, dtype=np.float32)
+    predict_call(dummy_caller, dummy_agent, 8000)
+

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 import json
 import logging
 from xml.sax.saxutils import escape as xml_escape
@@ -16,14 +17,23 @@ from customers.deps import get_current_customer
 from customers.lookup import find_by_email, find_by_phone
 from customers.schema import CustomerOut, LoginRequest, LoginResponse
 from customers.tokens import create_access_token
-from detector.inference import decode_stereo_wav, predict_call
+from detector.inference import decode_stereo_wav, predict_call, warmup_models
 from detector.schema import DetectionRequest, DetectionResponse
 from bank.router import router as bank_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("media-stream")
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pre-cargar modelos en memoria para eliminar el pico de cold-start
+    warmup_models()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
