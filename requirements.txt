@@ -18,3 +18,4 @@ twilio
 pytest
 pytest-asyncio
 httpx
+pybase64
