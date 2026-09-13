@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 
 import numpy as np
+import scipy.fft
 from scipy.fftpack import dct
 
 SAMPLE_RATE_DEFAULT = 8000
@@ -47,8 +48,9 @@ def _frame_signal(x: np.ndarray, sample_rate: int, frame_ms: float = FRAME_MS, h
     if len(x) < frame_len:
         return np.zeros((0, frame_len), dtype=np.float64)
     n_frames = 1 + (len(x) - frame_len) // hop_len
-    idx = np.arange(frame_len)[None, :] + hop_len * np.arange(n_frames)[:, None]
-    return x[idx].astype(np.float64)
+    shape = (n_frames, frame_len)
+    strides = (x.strides[0] * hop_len, x.strides[0])
+    return np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
 
 
 def _hz_to_mel(hz: np.ndarray) -> np.ndarray:
@@ -86,12 +88,14 @@ def compute_mfcc(x: np.ndarray, sample_rate: int, n_mfcc: int = N_MFCC, n_mels: 
     if frames.shape[0] == 0:
         return np.zeros((0, n_mfcc))
 
-    emphasized = np.append(frames[:, :1], frames[:, 1:] - 0.97 * frames[:, :-1], axis=1)
+    emphasized = np.empty_like(frames)
+    emphasized[:, 0] = frames[:, 0]
+    emphasized[:, 1:] = frames[:, 1:] - 0.97 * frames[:, :-1]
     window = np.hamming(frames.shape[1])
     windowed = emphasized * window
 
     n_fft = frames.shape[1]
-    mag = np.abs(np.fft.rfft(windowed, n=n_fft, axis=1))
+    mag = np.abs(scipy.fft.rfft(windowed, n=n_fft, axis=1, workers=2))
     power = (mag ** 2) / n_fft
 
     fbank = _mel_filterbank(sample_rate, n_fft, n_mels)
@@ -104,11 +108,14 @@ def compute_mfcc(x: np.ndarray, sample_rate: int, n_mfcc: int = N_MFCC, n_mels: 
 
 
 def spectral_flatness(x: np.ndarray, frame: int = 1024, hop: int = 512) -> float:
-    frames = _frame_signal(x, sample_rate=1, frame_ms=frame * 1000.0, hop_ms=hop * 1000.0)
-    if frames.shape[0] == 0:
+    if len(x) < frame:
         return 0.0
+    n_frames = 1 + (len(x) - frame) // hop
+    shape = (n_frames, frame)
+    strides = (x.strides[0] * hop, x.strides[0])
+    frames = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
     window = np.hanning(frame)
-    mag = np.abs(np.fft.rfft(frames * window, axis=1)) + 1e-10
+    mag = np.abs(scipy.fft.rfft(frames * window, axis=1, workers=2)) + 1e-10
     gm = np.exp(np.mean(np.log(mag), axis=1))
     am = np.mean(mag, axis=1)
     return float(np.mean(gm / am))
@@ -133,8 +140,8 @@ def _autocorr_pitch(frames: np.ndarray, sample_rate: int) -> tuple[np.ndarray, n
     n_fft = 1
     while n_fft < 2 * frame_len:
         n_fft *= 2
-    spec = np.fft.rfft(seg, n=n_fft, axis=1)
-    ac_full = np.fft.irfft(spec * np.conj(spec), n=n_fft, axis=1)
+    spec = scipy.fft.rfft(seg, n=n_fft, axis=1, workers=2)
+    ac_full = scipy.fft.irfft(spec * np.conj(spec), n=n_fft, axis=1, workers=2)
     ac = ac_full[:, :frame_len]
 
     segment = ac[:, min_lag:max_lag]
@@ -181,9 +188,15 @@ def extract_features(x: np.ndarray, sample_rate: int) -> dict[str, float]:
     energy_threshold = np.percentile(rms, VOICED_ENERGY_PERCENTILE)
     voiced_energy_mask = rms > energy_threshold
 
-    f0, strength = _autocorr_pitch(frames, sample_rate)
-    voiced_mask = voiced_energy_mask & (f0 > 0)
+    # Calculo de pitch solo sobre frames candidatos con energia suficiente (ahorro de ~60% computo)
+    n_frames = frames.shape[0]
+    f0 = np.zeros(n_frames)
+    if np.any(voiced_energy_mask):
+        sub_frames = frames[voiced_energy_mask]
+        sub_f0, _ = _autocorr_pitch(sub_frames, sample_rate)
+        f0[voiced_energy_mask] = sub_f0
 
+    voiced_mask = voiced_energy_mask & (f0 > 0)
     jitter, shimmer = _jitter_shimmer(f0, voiced_mask, rms)
 
     mfcc = compute_mfcc(x, sample_rate)

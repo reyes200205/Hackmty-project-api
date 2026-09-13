@@ -16,14 +16,31 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 
 def decode_stereo_wav(audio_b64: str) -> tuple[np.ndarray, np.ndarray, int]:
-    """Decodifica un WAV base64 (canal 0 = caller, canal 1 = agente)."""
+    """Decodifica un WAV base64 (canal 0 = caller, canal 1 = agente).
+    Optimizado para decodificar PCM 16-bit estéreo directamente en milisegundos,
+    con fallback automático a soundfile si el formato requiere decodificación avanzada.
+    """
     if "," in audio_b64:
         audio_b64 = audio_b64.split(",", 1)[1]
     wav_bytes = base64.b64decode(audio_b64)
+    if len(wav_bytes) > 44 and wav_bytes[:4] == b"RIFF" and wav_bytes[8:12] == b"WAVE":
+        channels = int.from_bytes(wav_bytes[22:24], "little")
+        sample_rate = int.from_bytes(wav_bytes[24:28], "little")
+        bits_per_sample = int.from_bytes(wav_bytes[34:36], "little")
+        pos = wav_bytes.find(b"data", 12)
+        if pos != -1 and bits_per_sample == 16:
+            data_size = int.from_bytes(wav_bytes[pos + 4 : pos + 8], "little")
+            pcm = np.frombuffer(wav_bytes, dtype=np.int16, count=data_size // 2, offset=pos + 8)
+            pcm = pcm.reshape(-1, channels).astype(np.float32) / 32768.0
+            caller = pcm[:, 0]
+            agent = pcm[:, 1] if channels > 1 else np.zeros_like(caller)
+            return caller, agent, sample_rate
+
     data, sample_rate = sf.read(io.BytesIO(wav_bytes), dtype="float32", always_2d=True)
     caller = data[:, 0]
     agent = data[:, 1] if data.shape[1] > 1 else np.zeros_like(caller)
     return caller, agent, sample_rate
+
 
 
 @functools.lru_cache(maxsize=1)
