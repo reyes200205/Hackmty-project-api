@@ -37,10 +37,10 @@ def decode_stereo_wav(audio_b64: str) -> tuple[np.ndarray, np.ndarray, int]:
             pcm = np.frombuffer(wav_bytes, dtype=np.int16, count=data_size // 2, offset=pos + 8)
             scale = np.float32(1.0 / 32768.0)
             if channels == 2:
-                caller = pcm[0::2].astype(np.float32) * scale
-                agent = pcm[1::2].astype(np.float32) * scale
+                caller = np.multiply(pcm[0::2], scale, dtype=np.float32)
+                agent = np.multiply(pcm[1::2], scale, dtype=np.float32)
             else:
-                caller = pcm.astype(np.float32) * scale
+                caller = np.multiply(pcm, scale, dtype=np.float32)
                 agent = np.zeros_like(caller)
             return caller, agent, sample_rate
 
@@ -56,7 +56,15 @@ def _load_model():
     if not MODEL_PATH.exists():
         return None
     import joblib
-    return joblib.load(MODEL_PATH)
+    bundle = joblib.load(MODEL_PATH)
+    scaler = bundle["scaler"]
+    model = bundle["model"]
+    return {
+        "mean": scaler.mean_.astype(np.float64),
+        "scale": scaler.scale_.astype(np.float64),
+        "booster": getattr(model, "booster_", None),
+        "model": model,
+    }
 
 
 @functools.lru_cache(maxsize=1)
@@ -65,7 +73,13 @@ def _load_calibrator():
         return None
     import joblib
     bundle = joblib.load(CALIBRATOR_PATH)
-    return bundle.get("calibrator")
+    cal = bundle.get("calibrator")
+    if cal is not None and hasattr(cal, "X_thresholds_") and hasattr(cal, "y_thresholds_"):
+        return {
+            "x": cal.X_thresholds_,
+            "y": cal.y_thresholds_,
+        }
+    return cal
 
 
 from .conversational import predict_conversational
@@ -84,9 +98,12 @@ def _acoustic_confidence(caller: np.ndarray, sample_rate: int) -> float:
         flatness = spectral_flatness(caller)
         return float(np.clip(flatness * 4.0, 0.0, 1.0))
 
-    vec = feature_vector(caller, sample_rate, max_seconds=60.0).reshape(1, -1)
-    vec_scaled = bundle["scaler"].transform(vec)
-    return float(bundle["model"].predict_proba(vec_scaled)[0, 1])
+    vec = feature_vector(caller, sample_rate, max_seconds=60.0)
+    vec_scaled = (vec - bundle["mean"]) / bundle["scale"]
+    booster = bundle.get("booster")
+    if booster is not None:
+        return float(booster.predict(vec_scaled.reshape(1, -1))[0])
+    return float(bundle["model"].predict_proba(vec_scaled.reshape(1, -1))[0, 1])
 
 
 def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tuple[bool, float]:
@@ -127,7 +144,10 @@ def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tup
     confidence = raw_confidence
     calibrator = _load_calibrator()
     if calibrator is not None:
-        confidence = float(np.clip(float(calibrator.predict([raw_confidence])[0]), 0.001, 0.999))
+        if isinstance(calibrator, dict):
+            confidence = float(np.clip(np.interp(raw_confidence, calibrator["x"], calibrator["y"]), 0.001, 0.999))
+        else:
+            confidence = float(np.clip(float(calibrator.predict([raw_confidence])[0]), 0.001, 0.999))
 
     return is_synthetic, round(confidence, 4)
 
@@ -140,6 +160,10 @@ def warmup_models() -> None:
     dummy_caller = np.zeros(8000, dtype=np.float32)
     dummy_agent = np.zeros(8000, dtype=np.float32)
     predict_call(dummy_caller, dummy_agent, 8000)
+    # Calentar la ruta con voz para pre-inicializar FFT, pitch y VAD con habla
+    t = np.linspace(0, 0.5, 4000, dtype=np.float32)
+    tone = np.sin(2 * np.pi * 200.0 * t).astype(np.float32)
+    predict_call(tone, tone, 8000)
     # Calentar el decodificador WAV rápido
     try:
         dummy_wav_hdr = (

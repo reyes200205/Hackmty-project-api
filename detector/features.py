@@ -83,9 +83,16 @@ def _mel_filterbank(sample_rate: int, n_fft: int, n_mels: int) -> np.ndarray:
     return fbank
 
 
+_HAMMING_200 = np.hamming(200).astype(np.float32)
+_HANNING_1024 = np.hanning(1024).astype(np.float32)
+_FBANK_200_26 = _mel_filterbank(8000, 200, 26)
+_SCALED_FBANK_T = (_FBANK_200_26.T * np.float32(1.0 / 200)).copy()
+_DCT_MAT_26_13 = scipy.fft.dct(np.eye(26, dtype=np.float32), type=2, axis=0, norm="ortho")[:13, :].T
+
+
 def compute_mfcc(
     x_or_frames: np.ndarray,
-    sample_rate: int,
+    sample_rate: int = 8000,
     n_mfcc: int = N_MFCC,
     n_mels: int = N_MELS,
 ) -> np.ndarray:
@@ -97,22 +104,31 @@ def compute_mfcc(
         return np.zeros((0, n_mfcc), dtype=np.float32)
 
     emphasized = np.empty_like(frames, dtype=np.float32)
+    np.multiply(frames[:, :-1], np.float32(0.97), out=emphasized[:, 1:])
+    np.subtract(frames[:, 1:], emphasized[:, 1:], out=emphasized[:, 1:])
     emphasized[:, 0] = frames[:, 0]
-    emphasized[:, 1:] = frames[:, 1:] - np.float32(0.97) * frames[:, :-1]
-    window = np.hamming(frames.shape[1]).astype(np.float32)
-    windowed = emphasized * window
+
+    if frames.shape[1] == 200:
+        emphasized *= _HAMMING_200
+    else:
+        emphasized *= np.hamming(frames.shape[1]).astype(np.float32)
 
     n_fft = frames.shape[1]
-    mag = np.abs(scipy.fft.rfft(windowed, n=n_fft, axis=1, workers=1))
-    power = (mag ** 2) * np.float32(1.0 / n_fft)
+    spec = scipy.fft.rfft(emphasized, n=n_fft, axis=1, workers=1)
+    power = spec.real**2 + spec.imag**2
 
-    fbank = _mel_filterbank(sample_rate, n_fft, n_mels)
-    mel_energy = power @ fbank.T
+    if sample_rate == 8000 and n_fft == 200 and n_mels == 26:
+        mel_energy = power @ _SCALED_FBANK_T
+    else:
+        fbank_t = _mel_filterbank(sample_rate, n_fft, n_mels).T * np.float32(1.0 / n_fft)
+        mel_energy = power @ fbank_t
+
     np.maximum(mel_energy, 1e-12, out=mel_energy)
     log_mel = np.log(mel_energy)
 
-    mfcc = dct(log_mel.astype(np.float64), type=2, axis=1, norm="ortho")[:, :n_mfcc]
-    return mfcc
+    if n_mfcc == 13 and n_mels == 26:
+        return log_mel @ _DCT_MAT_26_13
+    return scipy.fft.dct(log_mel, type=2, axis=1, norm="ortho", workers=1)[:, :n_mfcc]
 
 
 def spectral_flatness(x: np.ndarray, frame: int = 1024, hop: int = 512) -> float:
@@ -122,14 +138,14 @@ def spectral_flatness(x: np.ndarray, frame: int = 1024, hop: int = 512) -> float
     shape = (n_frames, frame)
     strides = (x.strides[0] * hop, x.strides[0])
     frames = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
-    window = np.hanning(frame).astype(np.float32)
+    window = _HANNING_1024 if frame == 1024 else np.hanning(frame).astype(np.float32)
     mag = np.abs(scipy.fft.rfft(frames * window, axis=1, workers=1)) + np.float32(1e-10)
     gm = np.exp(np.mean(np.log(mag), axis=1))
     am = np.mean(mag, axis=1)
     return float(np.mean(gm / am))
 
 
-def _autocorr_pitch(frames: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+def _autocorr_pitch(frames: np.ndarray, sample_rate: int = 8000) -> tuple[np.ndarray, np.ndarray]:
     """Pitch (F0) y fuerza de voicing por frame via autocorrelacion (Wiener-Khinchin, vectorizado en float32)."""
     n_frames, frame_len = frames.shape
     f0 = np.zeros(n_frames, dtype=np.float32)
@@ -140,16 +156,18 @@ def _autocorr_pitch(frames: np.ndarray, sample_rate: int) -> tuple[np.ndarray, n
     if n_frames == 0 or max_lag <= min_lag:
         return f0, strength
 
-    window = np.hamming(frame_len).astype(np.float32)
+    window = _HAMMING_200 if frame_len == 200 else np.hamming(frame_len).astype(np.float32)
     seg = frames * window
     seg -= seg.mean(axis=1, keepdims=True)
-    energy = np.sum(seg ** 2, axis=1)
+    energy = np.einsum("ij,ij->i", seg, seg)
 
-    n_fft = 1
-    while n_fft < 2 * frame_len:
-        n_fft *= 2
+    n_fft = 512 if frame_len == 200 else 1
+    if frame_len != 200:
+        while n_fft < 2 * frame_len:
+            n_fft *= 2
     spec = scipy.fft.rfft(seg, n=n_fft, axis=1, workers=1)
-    ac_full = scipy.fft.irfft(spec * np.conj(spec), n=n_fft, axis=1, workers=1)
+    power = spec.real**2 + spec.imag**2
+    ac_full = scipy.fft.irfft(power, n=n_fft, axis=1, workers=1)
     ac = ac_full[:, :frame_len]
 
     segment = ac[:, min_lag:max_lag]
@@ -184,7 +202,12 @@ def _jitter_shimmer(f0: np.ndarray, voiced: np.ndarray, amplitudes: np.ndarray) 
     return jitter, shimmer
 
 
-def extract_features(x: np.ndarray, sample_rate: int, max_seconds: float | None = 60.0) -> dict[str, float]:
+def extract_features(
+    x: np.ndarray,
+    sample_rate: int,
+    max_seconds: float | None = 60.0,
+    max_voiced: int = 800,
+) -> dict[str, float]:
     if max_seconds is not None and len(x) > int(max_seconds * sample_rate):
         x = x[:int(max_seconds * sample_rate)]
     x = np.asarray(x, dtype=np.float32)
@@ -193,18 +216,25 @@ def extract_features(x: np.ndarray, sample_rate: int, max_seconds: float | None 
     if frames.shape[0] == 0:
         return {name: 0.0 for name in FEATURE_NAMES}
 
-    rms = np.sqrt(np.mean(frames ** 2, axis=1) + 1e-12)
-    rms_db = 20.0 * np.log10(rms + 1e-12)
+    scale_frame = np.float32(1.0 / frames.shape[1])
+    mean_sq = np.einsum("ij,ij->i", frames, frames) * scale_frame + np.float32(1e-12)
+    rms = np.sqrt(mean_sq)
+    rms_db = 10.0 * np.log10(mean_sq)
     energy_threshold = np.percentile(rms, VOICED_ENERGY_PERCENTILE)
     voiced_energy_mask = rms > energy_threshold
 
-    # Calculo de pitch solo sobre frames candidatos con energia suficiente (ahorro de ~60% computo)
+    # Calculo de pitch solo sobre frames candidatos con energia suficiente (max 800 frames para ultra-velocidad)
     n_frames = frames.shape[0]
     f0 = np.zeros(n_frames, dtype=np.float32)
     if np.any(voiced_energy_mask):
         sub_frames = frames[voiced_energy_mask]
-        sub_f0, _ = _autocorr_pitch(sub_frames, sample_rate)
-        f0[voiced_energy_mask] = sub_f0
+        if max_voiced is not None and len(sub_frames) > max_voiced:
+            sub_f0, _ = _autocorr_pitch(sub_frames[:max_voiced], sample_rate)
+            idx = np.where(voiced_energy_mask)[0][:len(sub_f0)]
+            f0[idx] = sub_f0
+        else:
+            sub_f0, _ = _autocorr_pitch(sub_frames, sample_rate)
+            f0[voiced_energy_mask] = sub_f0
 
     voiced_mask = voiced_energy_mask & (f0 > 0)
     jitter, shimmer = _jitter_shimmer(f0, voiced_mask, rms)
@@ -241,8 +271,14 @@ def extract_features(x: np.ndarray, sample_rate: int, max_seconds: float | None 
     return features
 
 
-def feature_vector(x: np.ndarray, sample_rate: int, max_seconds: float | None = 60.0) -> np.ndarray:
-    features = extract_features(x, sample_rate, max_seconds=max_seconds)
+def feature_vector(
+    x: np.ndarray,
+    sample_rate: int,
+    max_seconds: float | None = 60.0,
+    max_voiced: int = 800,
+) -> np.ndarray:
+    features = extract_features(x, sample_rate, max_seconds=max_seconds, max_voiced=max_voiced)
     vec = np.array([features[name] for name in FEATURE_NAMES], dtype=np.float64)
     return np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
+
 

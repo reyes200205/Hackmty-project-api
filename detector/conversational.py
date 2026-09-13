@@ -21,13 +21,14 @@ def compute_vad_intervals(
     if len(signal) < frame_len:
         return []
 
-    # Calcular RMS en ventanas con stride eficiente
+    # Calcular RMS en ventanas con stride y einsum sin asignaciones temporales pesadas
     n_frames = (len(signal) - frame_len) // hop_len + 1
     shape = (n_frames, frame_len)
     strides = (signal.strides[0] * hop_len, signal.strides[0])
     frames = np.lib.stride_tricks.as_strided(signal, shape=shape, strides=strides)
 
-    rms = np.sqrt(np.mean(frames**2, axis=1) + 1e-12)
+    scale = np.float32(1.0 / frame_len)
+    rms = np.sqrt(np.einsum("ij,ij->i", frames, frames) * scale + 1e-12)
 
     # Umbral adaptativo basado en el piso de ruido
     noise_floor = np.percentile(rms, 20)
@@ -41,25 +42,14 @@ def compute_vad_intervals(
     if close_frames > 0:
         is_speech = binary_closing(is_speech, structure=np.ones(close_frames))
 
-    # Agrupar regiones continuas de habla
+    # Agrupar regiones continuas de habla de forma 100% vectorizada
     min_speech_frames = int(min_speech_ms / hop_ms)
-    intervals = []
-    in_speech = False
-    start_idx = 0
-
-    for i, active in enumerate(is_speech):
-        if active and not in_speech:
-            in_speech = True
-            start_idx = i
-        elif not active and in_speech:
-            in_speech = False
-            if (i - start_idx) >= min_speech_frames:
-                intervals.append((start_idx * hop_ms / 1000.0, i * hop_ms / 1000.0))
-
-    if in_speech and (len(is_speech) - start_idx) >= min_speech_frames:
-        intervals.append((start_idx * hop_ms / 1000.0, len(is_speech) * hop_ms / 1000.0))
-
-    return intervals
+    padded = np.pad(is_speech.view(np.int8), (1, 1), mode="constant")
+    diffs = np.diff(padded)
+    starts = np.where(diffs == 1)[0]
+    ends = np.where(diffs == -1)[0]
+    valid = (ends - starts) >= min_speech_frames
+    return list(zip((starts[valid] * hop_ms / 1000.0).tolist(), (ends[valid] * hop_ms / 1000.0).tolist()))
 
 
 def extract_features_from_turns(turns: list[dict]) -> dict[str, float]:
@@ -100,19 +90,21 @@ def extract_features_from_turns(turns: list[dict]) -> dict[str, float]:
 
     pos_latencies = [l for l in response_latencies if l >= 0]
 
-    # Reaccion a silencios largos del agente (>3.5s)
+    # Reaccion a silencios largos del agente (>3.5s) con busqueda binaria O(log N)
     long_silences_count = 0
     long_silence_reactions = 0
-    for i in range(len(agent_turns) - 1):
-        gap = agent_turns[i + 1]["start"] - agent_turns[i]["end"]
-        if gap >= 3.5:
-            long_silences_count += 1
-            spoke = any(
-                t["start"] >= agent_turns[i]["end"] and t["start"] < agent_turns[i + 1]["start"]
-                for t in caller_turns
-            )
-            if spoke:
-                long_silence_reactions += 1
+    if len(agent_turns) > 1 and len(caller_turns) > 0:
+        caller_starts = np.array([t["start"] for t in caller_turns], dtype=np.float32)
+        for i in range(len(agent_turns) - 1):
+            gap = agent_turns[i + 1]["start"] - agent_turns[i]["end"]
+            if gap >= 3.5:
+                long_silences_count += 1
+                spoke = bool(
+                    np.searchsorted(caller_starts, agent_turns[i + 1]["start"])
+                    > np.searchsorted(caller_starts, agent_turns[i]["end"])
+                )
+                if spoke:
+                    long_silence_reactions += 1
 
     return {
         "pos_latency_mean": float(np.mean(pos_latencies)) if pos_latencies else 2.0,
@@ -154,7 +146,17 @@ def _get_model():
     global _MODEL_CACHE
     if _MODEL_CACHE is None and _MODEL_PATH.exists():
         import joblib
-        _MODEL_CACHE = joblib.load(_MODEL_PATH)
+        raw_bundle = joblib.load(_MODEL_PATH)
+        scaler = raw_bundle["scaler"]
+        clf = raw_bundle["classifier"]
+        keys = tuple(raw_bundle["feature_keys"])
+        _MODEL_CACHE = {
+            "keys": keys,
+            "mean": scaler.mean_.astype(np.float32),
+            "scale": scaler.scale_.astype(np.float32),
+            "coef": clf.coef_[0].astype(np.float32),
+            "intercept": float(clf.intercept_[0]),
+        }
     return _MODEL_CACHE
 
 
@@ -174,16 +176,13 @@ def predict_conversational(
         conf = 0.85 if is_synth else 0.85
         return is_synth, conf, features
 
-    scaler = model["scaler"]
-    clf = model["classifier"]
-    keys = model["feature_keys"]
-
-    x = np.array([[features.get(k, 0.0) for k in keys]])
-    x_scaled = scaler.transform(x)
-    prob_synth = float(clf.predict_proba(x_scaled)[0, 1])
+    keys = model["keys"]
+    vec = np.array([features.get(k, 0.0) for k in keys], dtype=np.float32)
+    vec_scaled = (vec - model["mean"]) / model["scale"]
+    logit = float(np.dot(vec_scaled, model["coef"]) + model["intercept"])
+    prob_synth = 1.0 / (1.0 + np.exp(-logit))
 
     is_synthetic = prob_synth >= 0.5
-    # La confianza representa qué tan seguro está del veredicto
     confidence = float(np.clip(prob_synth if is_synthetic else (1.0 - prob_synth), 0.5, 0.99))
     return is_synthetic, confidence, features
 
