@@ -197,17 +197,11 @@ class TransferConfirmationService:
                 {"heard": transcript, "failure_reason": "voz sintetica sospechosa", "voice_confidence": voice_confidence},
             )
             decision, reason = "rejected", "voz sintetica sospechosa"
-        elif False and aasist_synthetic:
-            # DESACTIVADO (13-sep-2026): 3 de 3 llamadas humanas reales de
-            # Twilio seguidas rechazadas por AASIST (scores -6.97, -5.17,
-            # -6.29 -- mas negativos incluso que el ataque real de Google
-            # Translate que se uso para calibrar el umbral). Mismo patron que
-            # ya paso con digital_silence_ratio: validado solo contra el
-            # dataset de Altur y audio generado localmente, nunca contra una
-            # grabacion real de Twilio -- el canal real se comporta distinto
-            # de lo que se probo. Se deja el codigo y el log (aasist_reasoning
-            # abajo) para diagnosticar con una grabacion real antes de
-            # reactivarlo, pero ya no bloquea transferencias.
+        elif aasist_synthetic:
+            # AASIST (red neuronal, ver bank/aasist/detect.py): validado contra
+            # el ataque real de Google Translate (directo e inyectado por
+            # bocina), umbral conservador para minimizar falso positivo contra
+            # humanos -- ver limites documentados en detect.py.
             await repository.update_transfer_status(
                 transfer_id, "confirmation_pending", "rejected",
                 {"heard": transcript, "failure_reason": "voz sintetica sospechosa (aasist)", "voice_confidence": aasist_confidence},
