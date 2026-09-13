@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from twilio.twiml.voice_response import VoiceResponse
 
 from . import repository
+from .aasist.detect import check_aasist_authenticity
 from .confirmation_logs import log_confirmation_attempt
 from .phrase_generator import generate_liveness_word
 from .phrase_match import phrase_matches
@@ -157,9 +158,12 @@ class TransferConfirmationService:
                 check_voice_authenticity, wav_bytes,
             )
             too_slow, latency_s = await asyncio.to_thread(check_response_latency, wav_bytes)
+            aasist_synthetic, aasist_confidence, aasist_reasoning = await asyncio.to_thread(
+                check_aasist_authenticity, wav_bytes,
+            )
             logger.info(
-                "Transferencia %s: analisis de voz -> %s; tiempo antes de hablar=%.1fs (%s)",
-                transfer_id, voice_reasoning, latency_s, "SOSPECHOSO" if too_slow else "normal",
+                "Transferencia %s: analisis de voz -> %s; %s; tiempo antes de hablar=%.1fs (%s)",
+                transfer_id, voice_reasoning, aasist_reasoning, latency_s, "SOSPECHOSO" if too_slow else "normal",
             )
         except Exception:
             logger.exception("Fallo el analisis de la grabacion para transferencia %s", transfer_id)
@@ -193,6 +197,16 @@ class TransferConfirmationService:
                 {"heard": transcript, "failure_reason": "voz sintetica sospechosa", "voice_confidence": voice_confidence},
             )
             decision, reason = "rejected", "voz sintetica sospechosa"
+        elif aasist_synthetic:
+            # AASIST (red neuronal, ver bank/aasist/detect.py): validado contra
+            # el ataque real de Google Translate (directo e inyectado por
+            # bocina), umbral conservador para minimizar falso positivo contra
+            # humanos -- ver limites documentados en detect.py.
+            await repository.update_transfer_status(
+                transfer_id, "confirmation_pending", "rejected",
+                {"heard": transcript, "failure_reason": "voz sintetica sospechosa (aasist)", "voice_confidence": aasist_confidence},
+            )
+            decision, reason = "rejected", "voz sintetica sospechosa (aasist)"
         elif too_slow:
             await repository.update_transfer_status(
                 transfer_id, "confirmation_pending", "rejected",
@@ -225,6 +239,8 @@ class TransferConfirmationService:
             transfer_id, call_sid, recording_url, transcript, phrase_ok, is_synthetic, voice_confidence, decision, reason,
             liveness_match=liveness_ok, voice_reasoning=voice_reasoning,
             response_latency_s=latency_s, too_slow=too_slow,
+            aasist_synthetic=aasist_synthetic, aasist_confidence=aasist_confidence,
+            aasist_reasoning=aasist_reasoning,
         )
         logger.info(
             "Transferencia %s -> %s (frase_ok=%s, voz_sintetica=%s, confianza=%.2f)",

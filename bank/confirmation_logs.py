@@ -21,6 +21,9 @@ async def log_confirmation_attempt(
     voice_reasoning: str | None = None,
     response_latency_s: float | None = None,
     too_slow: bool | None = None,
+    aasist_synthetic: bool | None = None,
+    aasist_confidence: float | None = None,
+    aasist_reasoning: str | None = None,
 ) -> None:
     """Guarda el intento completo, incluyendo el desglose de CADA señal (no solo
     el veredicto final), para poder diagnosticar rechazos sin adivinar -- como
@@ -38,6 +41,9 @@ async def log_confirmation_attempt(
         "voice_reasoning": voice_reasoning,
         "response_latency_s": response_latency_s,
         "too_slow": too_slow,
+        "aasist_synthetic": aasist_synthetic,
+        "aasist_confidence": aasist_confidence,
+        "aasist_reasoning": aasist_reasoning,
         "decision": decision,
         "reason": reason,
         "created_at": datetime.now(timezone.utc),
