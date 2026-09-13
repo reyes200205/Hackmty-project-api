@@ -220,6 +220,8 @@ class TransferConfirmationService:
 
         await log_confirmation_attempt(
             transfer_id, call_sid, recording_url, transcript, phrase_ok, is_synthetic, voice_confidence, decision, reason,
+            liveness_match=liveness_ok, voice_reasoning=voice_reasoning,
+            response_latency_s=latency_s, too_slow=too_slow,
         )
         logger.info(
             "Transferencia %s -> %s (frase_ok=%s, voz_sintetica=%s, confianza=%.2f)",
