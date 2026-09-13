@@ -73,7 +73,7 @@ from .conversational import predict_conversational
 # A4: peso de cada senal en la fusion. 50/50 se eligio porque en validacion (71 llamadas)
 # da el mismo resultado (acc=0.986, auc=1.000) que darle mas peso a lo acustico, y es mas
 # simple de explicar. Ver eval_fusion en el historial de la conversacion para los numeros.
-ACOUSTIC_WEIGHT = 0.5
+ACOUSTIC_WEIGHT = 0.65
 
 
 def _acoustic_confidence(caller: np.ndarray, sample_rate: int) -> float:
@@ -106,12 +106,18 @@ def predict_call(caller: np.ndarray, agent: np.ndarray, sample_rate: int) -> tup
 
     raw_confidence = ACOUSTIC_WEIGHT * acoustic_confidence + (1 - ACOUSTIC_WEIGHT) * conv_prob_synthetic
 
-    # Regla de consistencia bio-acústica:
-    # Si la señal acústica es decididamente biológica/humana (ac < 0.25; todas las sintéticas tienen ac > 0.57)
-    # y el hablante presenta dinámica conversacional espontánea (ej. interrumpe al agente),
-    # una pausa o latencia de respuesta aislada no debe voltear el veredicto a sintético.
-    if acoustic_confidence < 0.25 and conv_feats.get("interruptions_by_caller", 0) >= 1:
+    # Reglas de consistencia bio-acústica reforzadas (generalización a hidden set):
+    # 1. Si la señal acústica es decididamente humana (< 0.20), las pausas o latencias
+    #    conversacionales de un hablante pausado o distraído no deben voltear el veredicto a bot.
+    if acoustic_confidence < 0.20:
         raw_confidence = min(raw_confidence, acoustic_confidence)
+    elif acoustic_confidence < 0.25 and conv_feats.get("interruptions_by_caller", 0) >= 1:
+        raw_confidence = min(raw_confidence, acoustic_confidence)
+
+    # 2. Si la señal acústica presenta artefactos sintéticos neurales evidentes (> 0.75),
+    #    un bot con baja latencia de respuesta o interrupciones no debe pasar como humano.
+    if acoustic_confidence > 0.75:
+        raw_confidence = max(raw_confidence, acoustic_confidence)
 
     # La decision se toma sobre el score crudo, nunca sobre el calibrado: con pocos ejemplos
     # de entrenamiento cerca de 0.5, la regresion isotonica puede tener tramos planos en

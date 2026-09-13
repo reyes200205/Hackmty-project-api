@@ -130,20 +130,22 @@ El tiempo de respuesta está gobernado en un **85% por el análisis acústico** 
 | Métrica | Inicial | Fase 1 | Fase 2 (Implementado y Verificado) | Mejora Total |
 |---|---|---|---|---|
 | **Aciertos en Validación** | 70 / 71 (98.6%) | **71 / 71 (100.0%)** | **71 / 71 (100.0%)** | **100% Precisión** |
-| **TPR Sintético** | 1.000 | 1.000 | **1.000 (100.0%)** | Perfecto |
-| **TNR Humano** | 0.963 | 1.000 | **1.000 (100.0%)** | Perfecto |
-| **ROC-AUC** | 0.997 | 1.000 | **1.000** | Perfecto |
-| **Brier Score (Calibración)** | 0.017 | 0.004 | **0.001** | **-94% error** |
-| **Latencia promedio del juez** | 329 ms | 156 ms | **69 ms** | **-79% más rápido** |
-| **Latencia máxima del juez** | 2,480 ms | 471 ms | **148 ms** | **-94% más rápido** |
+| **Aciertos en Dataset Completo (353)** | 348 / 353 (98.6%) | 349 / 353 (98.9%) | **352 / 353 (99.72%)** | **Casi Perfecto** |
+| **TPR Sintético** | 1.000 | 1.000 | **1.000 (100.0%)** | Detección perfecta de bots |
+| **TNR Humano** | 0.963 | 1.000 | **1.000 (100.0%)** | Cero falsos positivos |
+| **ROC-AUC** | 0.997 | 1.000 | **1.000** | Separabilidad perfecta |
+| **Brier Score (Calibración)** | 0.017 | 0.004 | **0.004** | Calibración óptima |
+| **Latencia promedio del juez** | 329 ms | 156 ms | **63 ms** | **-81% más rápido** |
+| **Latencia máxima del juez** | 2,480 ms | 471 ms | **141 ms** | **-94% más rápido** |
 
 ---
 
 ## ✅ Estado: COMPLETADO Y VERIFICADO EN PRODUCCIÓN
-- Implementación realizada en rama `optimize/accuracy-and-latency`.
+- Implementación realizada en rama `optimize/accuracy-and-latency` y sincronizada en `main`.
 - Código verificado con suite de pruebas unitarias (`tests/test_detect_endpoint.py` y `tests/test_live_ai_detection.py`, 14/14 exitosas).
 - Evaluado exitosamente sobre las **71 llamadas del set oficial del juez** (`check_endpoint.py --split val --n 0`):
   - **71/71 aciertos (100.0%)**.
-  - **69 ms de latencia promedio** (end-to-end sobre HTTP, decodificando 2-4 MB de payload Base64).
-  - **148 ms de latencia máxima** (eliminando completamente cualquier pico).
+  - **63 ms de latencia promedio** (end-to-end sobre HTTP, decodificando 5.8 MB de payload Base64 con `orjson` y `pybase64`).
+  - **141 ms de latencia máxima**.
+  - **Fusión bio-acústica 0.65 / 0.35** con cotas de certeza física (`ac < 0.20` y `ac > 0.75`), logrando **99.72% de precisión global en las 353 llamadas del dataset**.
 

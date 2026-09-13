@@ -48,10 +48,26 @@ def read_root():
     return {"mensaje": "¡FastAPI funcionando correctamente!"}
 
 
+try:
+    import orjson
+except ImportError:
+    orjson = None
+
+
 @app.post("/detect", response_model=DetectionResponse)
-async def detect(payload: DetectionRequest):
+async def detect(request: Request):
     try:
-        caller, agent, sample_rate = decode_stereo_wav(payload.audio_base64)
+        if orjson is not None:
+            body = await request.body()
+            payload_data = orjson.loads(body)
+            audio_b64 = payload_data.get("audio_base64")
+            if not audio_b64:
+                raise ValueError("Campo 'audio_base64' no proporcionado")
+        else:
+            payload = await request.json()
+            audio_b64 = payload.get("audio_base64")
+
+        caller, agent, sample_rate = decode_stereo_wav(audio_b64)
         is_synthetic, prob_synthetic = predict_call(caller, agent, sample_rate)
     except Exception as e:
         logger.exception("Error al procesar el audio en /detect: %s", e)
@@ -60,7 +76,10 @@ async def detect(payload: DetectionRequest):
     # no P(sintetico) crudo -- confirmado con scripts/check_endpoint.py del repo del reto,
     # que reconstruye P(sintetico) como confidence si is_synthetic, si no 1-confidence.
     confidence = prob_synthetic if is_synthetic else (1.0 - prob_synthetic)
-    return DetectionResponse(is_synthetic=is_synthetic, confidence=round(confidence, 4))
+    resp_obj = {"is_synthetic": is_synthetic, "confidence": round(confidence, 4)}
+    if orjson is not None:
+        return Response(content=orjson.dumps(resp_obj), media_type="application/json")
+    return DetectionResponse(**resp_obj)
 
 
 @app.post("/auth/login", response_model=LoginResponse)
