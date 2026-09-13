@@ -72,12 +72,15 @@ En esta llamada, una persona real se tomó 2.8 segundos para contestar una pregu
    - **TNR Humano:** 1.000 (100.0%).
    - **AUC:** 1.000.
    - **Brier Score:** 0.004.
-   - **Latencia:** Inferencia paralelizada a dos hilos y modelos precalentados con FastAPI `lifespan`.
+   - **Latencia promedio:** 156 ms (reducida desde 329 ms, -52%).
+   - **Latencia máxima:** 471 ms (reducida desde 2.48 s, -81%).
+   - **Optimizaciones aplicadas:** Decodificador rápido PCM 16-bit, `as_strided` para framing cero-copia, `scipy.fft` multihilo, filtrado de energía previa para cálculo de pitch y paralelismo en `predict_call`.
 
 ---
 
 ## ✅ Estado: COMPLETADO Y VERIFICADO
 - Implementación realizada en rama `optimize/accuracy-and-latency`.
 - Código verificado con `tests/test_detect_endpoint.py` (27 pruebas exitosas).
-- Evaluado exitosamente con el script oficial del juez del reto (`check_endpoint.py`).
+- Evaluado exitosamente con el script oficial del juez del reto (`check_endpoint.py`) con 156 ms promedio y 100% de precisión.
+
 
