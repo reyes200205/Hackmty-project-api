@@ -33,9 +33,12 @@ from pathlib import Path
 import numpy as np
 import scipy.signal as sig
 import soundfile as sf
-import torch
-
-from .model import Model
+try:
+    import torch
+    from .model import Model
+except Exception:
+    torch = None
+    Model = None
 
 _HERE = Path(__file__).parent
 _WEIGHTS_PATH = _HERE / "AASIST.pth"
@@ -97,6 +100,8 @@ def check_aasist_authenticity(wav_bytes: bytes) -> tuple[bool, float, str]:
     """Mismo formato que check_voice_authenticity: (is_synthetic, confidence, reasoning).
     is_synthetic solo se activa con SYNTHETIC_SCORE_THRESHOLD (conservador),
     no en 0.0, por el riesgo de falso positivo documentado arriba."""
+    if torch is None or Model is None:
+        return False, 0.5, "torch no disponible en entorno"
     raw_score = aasist_score(wav_bytes)
     is_synthetic = raw_score < SYNTHETIC_SCORE_THRESHOLD
     confidence = float(np.clip(0.5 + abs(raw_score) * 0.05, 0.5, 0.99))

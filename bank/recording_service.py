@@ -132,10 +132,10 @@ def check_voice_authenticity(wav_bytes: bytes) -> tuple[bool, float, str]:
     if feats.get("voiced_fraction", 0.0) < 0.05 or feats.get("pitch_mean", 0.0) == 0.0:
         return False, 0.0, "sin habla suficiente detectada para analizar voz"
 
-    pitch_std = feats["pitch_std"]
-    jitter = feats["jitter"]
-    shimmer = feats["shimmer"]
-    digital_silence_ratio = feats["digital_silence_ratio"]
+    pitch_std = feats.get("pitch_std", 0.0)
+    jitter = feats.get("jitter", 0.0)
+    shimmer = feats.get("shimmer", 0.0)
+    digital_silence_ratio = feats.get("digital_silence_ratio", 0.0)
 
     votes = {
         "pitch_std": pitch_std < PITCH_STD_THRESHOLD_HZ,
