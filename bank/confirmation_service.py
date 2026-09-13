@@ -61,13 +61,16 @@ class TransferConfirmationService:
 
         La frase SI se ve en la app con minutos de anticipacion a esta llamada
         -- tiempo de sobra para preparar un audio sintetico de antemano si se
-        tiene acceso a la app. Por eso se le pide ademas una palabra que no
-        existia hasta este momento (liveness_word, ver phrase_generator.py):
-        nadie pudo haberla incluido en un audio preparado con anticipacion."""
+        tiene acceso a la app. Por eso se le pide ademas un codigo de 4 digitos
+        que no existia hasta este momento (liveness_word, ver
+        phrase_generator.py): con 10,000 combinaciones posibles, nadie pudo
+        haberlo incluido en un audio preparado con anticipacion (a diferencia
+        de la version anterior de 8 palabras fijas, que si se podia
+        pre-generar completa -- ver nota en phrase_generator.py)."""
         vr = VoiceResponse()
         vr.say(
             f"Para confirmar la transferencia de {transfer['amount']:.2f} pesos a {transfer['beneficiary_name']}, "
-            "diga la frase de confirmacion que aparece en su aplicacion, seguida de la palabra "
+            "diga la frase de confirmacion que aparece en su aplicacion, seguida del codigo "
             f"{transfer['liveness_word']}.",
             language="es-MX",
         )
@@ -113,7 +116,7 @@ class TransferConfirmationService:
                 )
             elif "palabra de verificacion" in reason:
                 vr.say(
-                    "No pudimos confirmar la palabra de verificacion. La transferencia no sera procesada.",
+                    "No pudimos confirmar el codigo de verificacion. La transferencia no sera procesada.",
                     language="es-MX",
                 )
             else:
@@ -220,6 +223,8 @@ class TransferConfirmationService:
 
         await log_confirmation_attempt(
             transfer_id, call_sid, recording_url, transcript, phrase_ok, is_synthetic, voice_confidence, decision, reason,
+            liveness_match=liveness_ok, voice_reasoning=voice_reasoning,
+            response_latency_s=latency_s, too_slow=too_slow,
         )
         logger.info(
             "Transferencia %s -> %s (frase_ok=%s, voz_sintetica=%s, confianza=%.2f)",

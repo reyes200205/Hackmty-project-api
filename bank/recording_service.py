@@ -56,7 +56,7 @@ MIN_SUSPICIOUS_VOTES = 2
 #    para prepararla -- una demora que la calidad del audio replayed no puede
 #    disimular, porque no es una señal acustica, es de tiempo.
 DIGITAL_SILENCE_RATIO_THRESHOLD = 0.02
-MAX_SILENCE_BEFORE_SPEECH_S = 5.0
+MAX_SILENCE_BEFORE_SPEECH_S = 4.0
 
 _clients: list[AsyncGroq] | None = None
 _next_idx = 0
@@ -145,13 +145,20 @@ def check_voice_authenticity(wav_bytes: bytes) -> tuple[bool, float, str]:
     suspicious_count = sum(votes.values())
     digital_silence_flag = digital_silence_ratio > DIGITAL_SILENCE_RATIO_THRESHOLD
 
-    # digital_silence_flag es un voto aparte, no uno mas de los 3: por si solo
-    # ya es evidencia suficiente de inyeccion digital directa (ver nota arriba).
-    is_synthetic = suspicious_count >= MIN_SUSPICIOUS_VOTES or digital_silence_flag
+    # DESACTIVADO (13-sep-2026): causo un falso positivo real contra un cliente
+    # humano genuino en una llamada de Twilio de verdad (confidence=0.9, exacto
+    # el valor que forzaba esta regla). Hipotesis: las llamadas VoIP de Twilio
+    # pueden insertar silencio digital exacto en pausas naturales por supresion
+    # de silencio de la red, algo que el dataset de Altur (grabaciones ya hechas,
+    # sin ese salto VoIP) nunca tiene -- el umbral se calibro solo contra ese
+    # dataset, no contra audio real de Twilio. No lo re-habilites sin antes
+    # medir digital_silence_ratio en varias grabaciones reales de Twilio (humanas)
+    # para confirmar un umbral que no dispare con ellas.
+    # La proteccion real contra inyeccion directa/replay sigue en pie via la
+    # palabra de vivacidad + tiempo de respuesta (confirmation_service.py).
+    is_synthetic = suspicious_count >= MIN_SUSPICIOUS_VOTES
 
     confidence = 0.5 + 0.15 * suspicious_count if is_synthetic else max(0.2, 0.5 - 0.1 * suspicious_count)
-    if digital_silence_flag:
-        confidence = max(confidence, 0.9)
 
     reasoning = (
         f"pitch_std={pitch_std:.1f}Hz, jitter={jitter:.4f}, shimmer={shimmer:.4f} "

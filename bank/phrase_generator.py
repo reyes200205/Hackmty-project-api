@@ -5,12 +5,19 @@ import secrets
 _WORDS_A = ["TIGRE", "AGUILA", "DELFIN", "LEON", "PANTERA", "HALCON", "JAGUAR", "LOBO"]
 _WORDS_B = ["MONTANA", "OCEANO", "DESIERTO", "VOLCAN", "GLACIAR", "BOSQUE", "RIO", "VALLE"]
 
-# Palabras distintas a las de arriba, a proposito: esta palabra NUNCA se
-# muestra en la app, solo se genera al momento de la llamada y la dice el
-# agente en voz alta (ver generate_liveness_word). No es un secreto que haya
-# que proteger -- su valor esta en que no existe todavia cuando alguien
-# prepara un audio con anticipacion (ver nota en confirmation_service.py).
-_LIVENESS_WORDS = ["ROJO", "AZUL", "VERDE", "AMARILLO", "MORADO", "NARANJA", "GRIS", "BLANCO"]
+# Digitos para el codigo de vivacidad (ver generate_liveness_word). No es un
+# secreto que haya que proteger -- su valor esta en que no existe todavia
+# cuando alguien prepara un audio con anticipacion (ver nota en
+# confirmation_service.py).
+#
+# FIX (13-sep-2026): antes esto era 1 palabra de una lista fija de 8
+# (ROJO/AZUL/VERDE/...). Confirmado en produccion que eso no sirve: un
+# atacante preparado puede generar las 8 palabras posibles CON ANTICIPACION
+# (toma un par de minutos), y cuando el agente anuncia cual le toco, solo
+# reproduce el audio correcto -- eso explica por que Google Translate
+# respondio en 0.49s, no estaba generando nada en vivo. Con 4 digitos al azar
+# (10,000 combinaciones) pre-generar todas las posibles ya no es practico.
+_DIGIT_WORDS = ["CERO", "UNO", "DOS", "TRES", "CUATRO", "CINCO", "SEIS", "SIETE", "OCHO", "NUEVE"]
 
 
 def generate_confirmation_phrase() -> str:
@@ -29,9 +36,9 @@ def generate_confirmation_phrase() -> str:
 
 
 def generate_liveness_word() -> str:
-    """Palabra de vivacidad: se genera al momento de iniciar la llamada
-    (segundos antes de que el agente la diga), nunca antes y nunca en la app.
-    No protege un secreto -- protege que la respuesta se produzca en vivo: es
-    imposible tener listo un audio con una palabra que no existia cuando se
-    preparo el ataque."""
-    return secrets.choice(_LIVENESS_WORDS)
+    """Codigo de vivacidad: 4 digitos al azar (dichos como palabras, para
+    reusar el mismo comparador difuso de phrase_matches), generados al momento
+    de iniciar la llamada -- nunca antes y nunca en la app. No protege un
+    secreto -- protege que la respuesta se produzca en vivo: con 10,000
+    combinaciones posibles, pre-generar todas de antemano no es practico."""
+    return " ".join(secrets.choice(_DIGIT_WORDS) for _ in range(4))
