@@ -20,3 +20,4 @@ pytest-asyncio
 httpx
 pybase64
 orjson
+torch
