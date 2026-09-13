@@ -9,7 +9,7 @@ from . import repository
 from .aasist.detect import check_aasist_authenticity
 from .confirmation_logs import log_confirmation_attempt
 from .phrase_generator import generate_liveness_word
-from .phrase_match import phrase_matches
+from .phrase_match import liveness_code_matches, phrase_matches
 from .recording_service import check_response_latency, check_voice_authenticity, download_recording, transcribe_wav
 from .twilio_service import TwilioService
 
@@ -153,7 +153,7 @@ class TransferConfirmationService:
             wav_bytes = await download_recording(recording_url)
             transcript = await transcribe_wav(wav_bytes)
             phrase_ok = phrase_matches(transfer["confirmation_phrase"], transcript)
-            liveness_ok = phrase_matches(transfer["liveness_word"], transcript)
+            liveness_ok = liveness_code_matches(transfer["liveness_word"], transcript)
             is_synthetic, voice_confidence, voice_reasoning = await asyncio.to_thread(
                 check_voice_authenticity, wav_bytes,
             )

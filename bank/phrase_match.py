@@ -39,3 +39,26 @@ def phrase_matches(expected: str, spoken: str, threshold: float = MATCH_THRESHOL
         if best < threshold:
             return False
     return True
+
+
+_DIGIT_WORD_TO_DIGIT = {
+    "CERO": "0", "UNO": "1", "DOS": "2", "TRES": "3", "CUATRO": "4",
+    "CINCO": "5", "SEIS": "6", "SIETE": "7", "OCHO": "8", "NUEVE": "9",
+}
+
+
+def liveness_code_matches(digit_words: str, transcript: str) -> bool:
+    """Compara el codigo de vivacidad (ej. 'CINCO DOS SIETE CERO') contra la
+    transcripcion, aceptando dos formatos validos de la MISMA respuesta
+    correcta:
+    1. Como palabras sueltas ("cinco dos siete cero") -- usa phrase_matches.
+    2. Como numero pegado ("5270") -- lo mas comun en la practica: Whisper
+       casi siempre transcribe digitos hablados como numero, no como palabras
+       (confirmado en produccion el 13-sep-2026: alguien dijo el codigo bien
+       y transcribio "5270", y el chequeo de solo-palabras lo rechazo)."""
+    if phrase_matches(digit_words, transcript):
+        return True
+
+    expected_digits = "".join(_DIGIT_WORD_TO_DIGIT[w] for w in digit_words.split())
+    transcript_digits = "".join(ch for ch in transcript if ch.isdigit())
+    return bool(expected_digits) and expected_digits in transcript_digits
